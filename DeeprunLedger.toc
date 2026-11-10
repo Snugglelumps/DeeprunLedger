@@ -1,0 +1,13 @@
+## Interface: 16001
+## Title: Deeprun Ledger
+## X-Curse-Project-ID: 1795197
+## Version: @project-version@
+## Notes: Records tithe mail and shows who paid what. Type /drl.
+## SavedVariables: tithe_ledger
+## SavedVariablesPerCharacter: DeeprunLedgerConfig
+
+sha256.lua
+guild_config.lua
+hash_ui.lua
+incoming_rows.lua
+DeeprunLedger.lua
