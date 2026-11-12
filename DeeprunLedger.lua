@@ -1,8 +1,8 @@
 -- Deeprun Ledger
--- The treasurer's side: records tithe mail, checks each one's transaction ID,
--- and shows who paid what in a date range. Open it with /drl.
+-- The treasurer's side: shows who paid what in a date range. Open it with /drl.
+-- Ingest.lua records the rows, Verification.lua checks them against the guild bank.
 
--- shared.sha256 comes from sha256.lua, shared.secret from guild_config.lua
+-- The prefix, rates, transaction IDs and item credit come from DeeprunShared.lua
 local addon_name, shared = ...
 
 
@@ -10,66 +10,77 @@ local addon_name, shared = ...
 -- Settings
 ------------------------------------------------------------
 
-local trade_goods_multiplier = 3
+-- Same number as the sync app's interval. Change both together.
+local sync_interval_seconds = 600
 
--- tithe_ledger is one flat list of tithe mails, saved account-wide (see DeeprunLedger.toc).
--- One row per mail:
---   { transactionID = "1793000000-9f2c4a81be", name = "Bob", amount = <gold, in copper>,
---     attachment = { { item_name = "Linen Cloth", count = 20, value = <copper> } },
---     total_value = <gold plus item values, in copper> }
--- The number before the dash is when the tithe was sent.
+-- tithe_ledger is saved account-wide (see DeeprunLedger.toc):
+--   data    one row per deposit:
+--     { transactionID = "<time>|<base64>", name = "First Last", time = <seconds>,
+--       amount = <gold, in copper, 0 for items>, attachment = {} or { { item_id = 2589, count = 20 } },
+--       verified = 0 or 1 }
+--   delete  a list of transactionIDs. Those rows stay in data, hidden. Nothing ever comes off the list.
+-- Rows store what was deposited, never what it's worth.
 
--- Every transaction ID already in the ledger. A repeated one gets turned away.
-local seen_transaction_ids = {}
+-- Every transaction ID in data. A repeated one gets ACKed but not added again.
+shared.seen_transaction_ids = {}
 
-
-------------------------------------------------------------
--- Transaction IDs
-------------------------------------------------------------
-
--- The time it was sent, a dash, then the first 10 characters of the hash of
--- that time, the sender's name and the secret.
--- DeeprunTithe makes them with this same function.
-local function makeTransactionID(sent_time, player_name)
-    local full_hash = shared.sha256(sent_time .. player_name .. shared.secret)
-    return sent_time .. "-" .. string.sub(full_hash, 1, 10)
-end
-
-
--- True if the tithe addon made this ID for this sender
-local function isValidTransactionID(transaction_id, sender)
-    local sent_time = string.match(transaction_id, "^(%d+)%-")
-    if sent_time == nil then
-        return false
-    end
-
-    return transaction_id == makeTransactionID(sent_time, sender)
-end
-
-
--- When a tithe was sent, read from the front of its transaction ID
-local function rowDate(row)
-    local formatted_date = tonumber(string.match(row.transactionID, "^(%d+)"))
-    return formatted_date
-end
+-- Every transaction ID with a delete row. Hidden everywhere.
+shared.ignore_rows = {}
 
 
 ------------------------------------------------------------
 -- Ledger helpers
 ------------------------------------------------------------
 
+function shared.rebuildIgnoreRows()
+    shared.ignore_rows = {}
+
+    for delete_number, transaction_id in ipairs(tithe_ledger.delete) do
+        shared.ignore_rows[transaction_id] = true
+    end
+end
+
+
+-- Gold plus what the items are worth. An item that hasn't loaded yet counts 0 until it does.
+local function rowContribution(row)
+    local contribution = row.amount
+
+    for attachment_number, item in ipairs(row.attachment) do
+        if C_Item.GetItemInfo(item.item_id) == nil then
+            C_Item.RequestLoadItemDataByID(item.item_id)
+        end
+
+        contribution = contribution + shared.itemCreditValue(item.item_id, item.count)
+    end
+
+    return math.floor(contribution)
+end
+
+
+-- Hides the row right away. The sync app spreads the ID to the other ledgers.
+local function deleteRow(transaction_id)
+    if shared.ignore_rows[transaction_id] then
+        return
+    end
+
+    table.insert(tithe_ledger.delete, transaction_id)
+end
+
+
 -- Every payment in the range, newest first
 local function getPaymentsInRange(start_date, end_date)
     local payments = {}
 
-    for row_number, row in ipairs(tithe_ledger) do
-        if rowDate(row) >= start_date and rowDate(row) <= end_date then
-            table.insert(payments, row)
+    for row_number, row in ipairs(tithe_ledger.data) do
+        if not shared.ignore_rows[row.transactionID] then
+            if row.time >= start_date and row.time <= end_date then
+                table.insert(payments, row)
+            end
         end
     end
 
     table.sort(payments, function(first, second)
-        return rowDate(first) > rowDate(second)
+        return first.time > second.time
     end)
 
     return payments
@@ -90,7 +101,7 @@ local function getPlayerTotals(payments)
             table.insert(player_totals, player_total)
         end
 
-        player_total.copper = player_total.copper + row.total_value
+        player_total.copper = player_total.copper + rowContribution(row)
         player_total.payments = player_total.payments + 1
     end
 
@@ -137,6 +148,19 @@ local function moneyText(copper)
         return "0"
     end
     return GetMoneyString(copper)
+end
+
+
+local function timeAgoText(seconds)
+    if seconds < 60 * 60 then
+        return math.floor(seconds / 60) .. " min ago"
+    end
+
+    if seconds < 48 * 60 * 60 then
+        return math.floor(seconds / (60 * 60)) .. " hours ago"
+    end
+
+    return math.floor(seconds / (24 * 60 * 60)) .. " days ago"
 end
 
 
@@ -200,6 +224,7 @@ local start_date_field = nil
 local end_date_field = nil
 local active_range = "week"   -- "week", "month", "all" or "custom"
 local message_label = nil
+local sync_label = nil
 
 -- Totals list
 local totals_scroll_child = nil
@@ -288,7 +313,7 @@ local function updateTotals(player_totals)
 end
 
 
--- a row int he payment list: date, player, gold, items, total, with every other row shaded
+-- a row int he payment list: date, player, gold, total, verified, delete, with every other row shaded
 -- one at a time so they stay aligned. wrote this in python calude translated it lol
 local function getPaymentRow(row_number)
     local row = payment_rows[row_number]
@@ -309,13 +334,21 @@ local function getPaymentRow(row_number)
         row.player_label:SetPoint("LEFT", row, "LEFT", 130, 0)
 
         row.gold_label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.gold_label:SetPoint("RIGHT", row, "RIGHT", -200, 0)
-
-        row.items_label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.items_label:SetPoint("RIGHT", row, "RIGHT", -100, 0)
+        row.gold_label:SetPoint("RIGHT", row, "RIGHT", -210, 0)
 
         row.total_label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.total_label:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+        row.total_label:SetPoint("RIGHT", row, "RIGHT", -110, 0)
+
+        row.verified_label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.verified_label:SetPoint("RIGHT", row, "RIGHT", -60, 0)
+
+        row.delete_button = makeFlatButton(row, "Delete", 44)
+        row.delete_button:SetHeight(16)
+        row.delete_button:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+        row.delete_button:SetScript("OnClick", function()
+            deleteRow(row.transaction_id)
+            shared.refreshIfOpen()
+        end)
 
         payment_rows[row_number] = row
     end
@@ -344,11 +377,19 @@ local function updatePayments(payments)
 
     for row_number, ledger_row in ipairs(payments) do
         local row = getPaymentRow(row_number)
-        row.date_label:SetText(friendlyDate(rowDate(ledger_row)))
+        row.transaction_id = ledger_row.transactionID
+        row.date_label:SetText(friendlyDate(ledger_row.time))
         row.player_label:SetText(ledger_row.name)
         row.gold_label:SetText(moneyText(ledger_row.amount))
-        row.items_label:SetText(moneyText(ledger_row.total_value - ledger_row.amount))
-        row.total_label:SetText(moneyText(ledger_row.total_value))
+        row.total_label:SetText(moneyText(rowContribution(ledger_row)))
+
+        if ledger_row.verified == 1 then
+            row.verified_label:SetText("Yes")
+            row.verified_label:SetTextColor(0.25, 0.8, 0.4)
+        else
+            row.verified_label:SetText("No")
+            row.verified_label:SetTextColor(1, 0.3, 0.3)
+        end
     end
 
     payments_scroll_child:SetHeight(18 * #payments + 4)
@@ -362,8 +403,46 @@ local function updateRangeButtons()
 end
 
 
+-- The sync app rewrites deeprun_sync_status every sync, WoW open or not.
+-- So at login a running app's status is never older than sync_interval_seconds. It's checked then and kept
+-- until the next reload, so a dead app shows red right away and a live one never goes red mid-session.
+local sync_is_stale = false
+
+local function checkSyncAtLogin()
+    if deeprun_sync_status == nil then
+        return
+    end
+
+    -- Twice the interval, so a sync that's a few seconds late doesn't trip it
+    sync_is_stale = time() - deeprun_sync_status.time > 2 * sync_interval_seconds
+end
+
+
+local function updateSyncStatus()
+    if deeprun_sync_status == nil then
+        sync_label:SetText("Never synced")
+        sync_label:SetTextColor(1, 0.3, 0.3)
+        return
+    end
+
+    local seconds_since_sync = time() - deeprun_sync_status.time
+    local sync_text = "Last synced " .. timeAgoText(seconds_since_sync) .. " · " .. deeprun_sync_status.rows_added .. " rows added"
+
+    if sync_is_stale then
+        sync_label:SetText(sync_text .. " · Check that the sync app is running")
+        sync_label:SetTextColor(1, 0.3, 0.3)
+        return
+    end
+
+    sync_label:SetText(sync_text)
+    sync_label:SetTextColor(0.5, 0.5, 0.5)
+end
+
+
 local function refreshView()
+    shared.rebuildIgnoreRows()
     updateRangeButtons()
+    updateSyncStatus()
 
     local start_date, end_date = getRangeDates(start_date_field, end_date_field)
 
@@ -408,9 +487,9 @@ local function fillAll()
     active_range = "all"
 
     local first_date = time()
-    for row_number, row in ipairs(tithe_ledger) do
-        if rowDate(row) < first_date then
-            first_date = rowDate(row)
+    for row_number, row in ipairs(tithe_ledger.data) do
+        if row.time < first_date then
+            first_date = row.time
         end
     end
 
@@ -432,7 +511,8 @@ local function buildWindow()
     main_frame = CreateFrame("Frame", "DeeprunLedgerFrame", UIParent, "BasicFrameTemplateWithInset")
     main_frame:SetSize(600, 560)
     main_frame:SetPoint("CENTER")
-    main_frame.TitleText:SetText("Deeprun Ledger")
+    -- The version is ## Version: in DeeprunLedger.toc. The sync app checks the same number.
+    main_frame.TitleText:SetText("Deeprun Ledger " .. C_AddOns.GetAddOnMetadata(addon_name, "Version"))
     main_frame:SetMovable(true)
     main_frame:EnableMouse(true)
     main_frame:RegisterForDrag("LeftButton")
@@ -508,6 +588,9 @@ local function buildWindow()
     message_label = content:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     message_label:SetPoint("TOPLEFT", content, "TOPLEFT", 14, -38)
 
+    sync_label = content:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    sync_label:SetPoint("TOPRIGHT", content, "TOPRIGHT", -14, -38)
+
     -- Totals panel
     local totals_panel = makePanel(content, 12, 56, 570, 180)
 
@@ -560,17 +643,18 @@ local function buildWindow()
     payments_player_heading:SetPoint("TOPLEFT", payments_panel, "TOPLEFT", 138, -30)
     payments_player_heading:SetText("Player")
 
+    -- Each heading sits 30 further left than its column, for the scroll bar
     local payments_gold_heading = payments_panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    payments_gold_heading:SetPoint("TOPRIGHT", payments_panel, "TOPRIGHT", -238, -30)
+    payments_gold_heading:SetPoint("TOPRIGHT", payments_panel, "TOPRIGHT", -240, -30)
     payments_gold_heading:SetText("Gold")
 
-    local payments_items_heading = payments_panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    payments_items_heading:SetPoint("TOPRIGHT", payments_panel, "TOPRIGHT", -138, -30)
-    payments_items_heading:SetText("Items")
-
     local payments_total_heading = payments_panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    payments_total_heading:SetPoint("TOPRIGHT", payments_panel, "TOPRIGHT", -38, -30)
+    payments_total_heading:SetPoint("TOPRIGHT", payments_panel, "TOPRIGHT", -140, -30)
     payments_total_heading:SetText("Total")
+
+    local payments_verified_heading = payments_panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    payments_verified_heading:SetPoint("TOPRIGHT", payments_panel, "TOPRIGHT", -90, -30)
+    payments_verified_heading:SetText("Verified")
 
     local payments_scroll = CreateFrame("ScrollFrame", nil, payments_panel, "UIPanelScrollFrameTemplate")
     payments_scroll:SetPoint("TOPLEFT", payments_panel, "TOPLEFT", 8, -46)
@@ -585,7 +669,12 @@ local function buildWindow()
 end
 
 
-local function refreshIfOpen()
+function shared.refreshIfOpen()
+    -- Item info can arrive during the loading screen, before the window's built
+    if main_frame == nil then
+        return
+    end
+
     if main_frame:IsShown() then
         refreshView()
     end
@@ -593,130 +682,94 @@ end
 
 
 ------------------------------------------------------------
--- recording the mail
-------------------------------------------------------------
-
--- this calculates the value of trade goods. its just a flat * trade_goids_multiplier.
--- i suppose using some market db would be smart, but idk... thats a LOT more work
-local function itemTitheValue(item_id, stack_count, item_quality)
-    local vendor_price = select(11, C_Item.GetItemInfo(item_id))
-    local item_class_id = select(12, C_Item.GetItemInfo(item_id))
-
-    if vendor_price == nil then
-        return 0
-    end
-
-    -- Grays make debt but don't pay it. Must match DeeprunTithe.
-    if item_quality == Enum.ItemQuality.Poor then
-        return 0
-    end
-
-    if item_class_id == Enum.ItemClass.Tradegoods then
-        return vendor_price * stack_count * trade_goods_multiplier
-    end
-
-    return 0
-end
-
-
-local function recordMail(mail_number)
-    -- Without the code from Guild Info there's nothing to check IDs against
-    if shared.secret == nil then
-        return
-    end
-
-    local package_icon, stationery_icon, sender, subject, money, cod_amount = GetInboxHeaderInfo(mail_number)
-
-    -- i dont really understand the cod thing. 
-    -- to my eye it shows up as just a value.. which I think could trick the system??
-    if cod_amount > 0 then
-        return
-    end
-
-    local transaction_id = string.match(subject, "%d+%-%x+")
-    if transaction_id == nil then
-        return
-    end
-
-    if seen_transaction_ids[transaction_id] then
-        return
-    end
-
-    if not isValidTransactionID(transaction_id, sender) then
-        return
-    end
-
-    local attachments = {}
-    local total_value = money
-
-    for attachment_number = 1, ATTACHMENTS_MAX_RECEIVE do
-        local item_name, item_id, item_texture, stack_count, item_quality = GetInboxItem(mail_number, attachment_number)
-
-        if item_id ~= nil then
-            local item_value = itemTitheValue(item_id, stack_count, item_quality)
-            table.insert(attachments, { item_name = item_name, count = stack_count, value = item_value })
-            total_value = total_value + item_value
-        end
-    end
-
-    table.insert(tithe_ledger, {
-        transactionID = transaction_id,
-        name = sender,
-        amount = money,
-        attachment = attachments,
-        total_value = total_value,
-    })
-    seen_transaction_ids[transaction_id] = true
-end
-
-
-local function onMailTaken(mail_number)
-    recordMail(mail_number)
-    refreshIfOpen()
-end
-
-
-hooksecurefunc("TakeInboxMoney", onMailTaken)
-hooksecurefunc("TakeInboxItem", onMailTaken)
-hooksecurefunc("AutoLootMailItem", onMailTaken)
-
-
-------------------------------------------------------------
 -- Startup and slash command
 ------------------------------------------------------------
 
--- The sync app writes rows from the gist into incoming_rows.lua, which loads on /reload.
+-- The sync app writes the gist into incoming_rows.lua, which loads on /reload:
+--   shared.incoming_rows = { data = { ... }, delete = { ... } }, the same shape as tithe_ledger.
 -- It holds the whole ledger, so most rows here are ones we already have.
 local function mergeIncomingRows()
     if shared.incoming_rows == nil then
         return
     end
 
-    for row_number, row in ipairs(shared.incoming_rows) do
-        if not seen_transaction_ids[row.transactionID] then
-            table.insert(tithe_ledger, row)
-            seen_transaction_ids[row.transactionID] = true
+    -- Still the old mail-era list, from before the sync app wrote data and delete
+    if shared.incoming_rows.data == nil then
+        return
+    end
+
+    local saved_rows = {}
+    for row_number, row in ipairs(tithe_ledger.data) do
+        saved_rows[row.transactionID] = row
+    end
+
+    for row_number, row in ipairs(shared.incoming_rows.data) do
+        local saved_row = saved_rows[row.transactionID]
+
+        if saved_row == nil then
+            table.insert(tithe_ledger.data, row)
+            saved_rows[row.transactionID] = row
+        elseif row.verified == 1 then
+            saved_row.verified = 1
         end
+    end
+end
+
+
+-- Adds every deleted ID we don't have yet
+local function mergeIncomingDeletes()
+    if shared.incoming_rows == nil then
+        return
+    end
+
+    if shared.incoming_rows.delete == nil then
+        return
+    end
+
+    local saved_deletes = {}
+    for delete_number, transaction_id in ipairs(tithe_ledger.delete) do
+        saved_deletes[transaction_id] = true
+    end
+
+    for delete_number, transaction_id in ipairs(shared.incoming_rows.delete) do
+        if not saved_deletes[transaction_id] then
+            table.insert(tithe_ledger.delete, transaction_id)
+            saved_deletes[transaction_id] = true
+        end
+    end
+end
+
+
+local function buildSeenTransactionIDs()
+    shared.seen_transaction_ids = {}
+
+    for row_number, row in ipairs(tithe_ledger.data) do
+        shared.seen_transaction_ids[row.transactionID] = true
     end
 end
 
 
 local ledger_events = CreateFrame("Frame")
 ledger_events:RegisterEvent("PLAYER_LOGIN")
+ledger_events:RegisterEvent("GET_ITEM_INFO_RECEIVED")
 
 ledger_events:SetScript("OnEvent", function(self, event)
     if event == "PLAYER_LOGIN" then
-        -- First time on this account, there's no saved ledger yet
-        if tithe_ledger == nil then
-            tithe_ledger = {}
-        end
-
-        for row_number, row in ipairs(tithe_ledger) do
-            seen_transaction_ids[row.transactionID] = true
+        -- First time on this account, or a mail-era ledger. Those rows are already in the gist and sync brings them back.
+        if tithe_ledger == nil or tithe_ledger.data == nil then
+            tithe_ledger = { data = {}, delete = {} }
         end
 
         mergeIncomingRows()
+        mergeIncomingDeletes()
+        shared.rebuildIgnoreRows()
+        buildSeenTransactionIDs()
+        checkSyncAtLogin()
         buildWindow()
+
+    -- An item's price arrived, so its row's total can be drawn properly now
+    elseif event == "GET_ITEM_INFO_RECEIVED" then
+        shared.refreshIfOpen()
     end
 end)
 

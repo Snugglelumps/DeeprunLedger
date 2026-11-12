@@ -1,5 +1,5 @@
-# Pushing a tag like v1.0.1 packages the add-on, makes a GitHub release,
-# and uploads to CurseForge. The project ID comes from DeeprunLedger.toc.
+# Pushing a tag like v1.0.1 packages the add-on and makes a GitHub release with the zip.
+# Deeprun Sync downloads that zip to install and update the ledger.
 name: Release
 
 on:
@@ -15,8 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-      GH_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - uses: actions/checkout@v7
