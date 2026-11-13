@@ -245,11 +245,16 @@ local payment_rows = {}
 local payments_message = nil
 
 
+-- Right-clicking a player sets what they owe (Commands.lua)
 local function getTotalRow(row_number)
     local row = total_rows[row_number]
 
     if row == nil then
         row = makeListRow(totals_scroll_child, row_number)
+        row:RegisterForClicks("RightButtonUp")
+        row:SetScript("OnClick", function(self)
+            shared.showSetTithe(self.player)
+        end)
 
         row.player_label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         row.player_label:SetPoint("LEFT", row, "LEFT", 8, 0)
@@ -304,6 +309,7 @@ local function updateTotals(player_totals)
         end
 
         local row = getTotalRow(row_number)
+        row.player = player_total.player
         row.player_label:SetText(player_total.player)
         row.payments_label:SetText(tostring(player_total.payments))
         row.share_label:SetText(share .. "%")
@@ -314,13 +320,133 @@ local function updateTotals(player_totals)
 end
 
 
+------------------------------------------------------------
+-- Payment details: click a payment to see everything about it
+------------------------------------------------------------
+
+local details_frame = nil
+local details_fields = {}
+
+-- The fields, in order. Each one's text is a box you can copy from.
+local details_labels = {
+    "Transaction ID",
+    "Player",
+    "Sent",
+    "Sent (Unix time)",
+    "Gold (copper)",
+    "Item ID",
+    "Item name",
+    "Item count",
+    "Counts for (copper)",
+    "Verified",
+}
+
+
+-- A box you can select and copy from, but not change.
+-- Typing puts the value straight back. Clicking in selects it all, ready for Ctrl+C.
+local function makeCopyField(label_text, top)
+    local label = details_frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    label:SetPoint("TOPLEFT", details_frame, "TOPLEFT", 72, top - 4)
+    label:SetText(label_text)
+
+    local field = CreateFrame("EditBox", nil, details_frame, "InputBoxTemplate")
+    field:SetPoint("TOPLEFT", details_frame, "TOPLEFT", 200, top)
+    field:SetPoint("TOPRIGHT", details_frame, "TOPRIGHT", -18, top)
+    field:SetHeight(20)
+    field:SetAutoFocus(false)
+
+    field:SetScript("OnTextChanged", function(self, typed)
+        if typed then
+            self:SetText(self.value)
+            self:HighlightText()
+        end
+    end)
+
+    field:SetScript("OnEditFocusGained", function(self)
+        self:HighlightText()
+    end)
+
+    field:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+    end)
+
+    return field
+end
+
+
+-- The same portrait window as the ledger, beside it on the right
+local function buildDetailsWindow()
+    details_frame = CreateFrame("Frame", "DeeprunPaymentDetailsFrame", main_frame, "PortraitFrameTemplate")
+    details_frame:SetSize(480, 46 + 26 * #details_labels)
+    details_frame:SetPoint("TOPLEFT", main_frame, "TOPRIGHT", 4, 0)
+    details_frame:SetTitle("Payment")
+    details_frame:SetPortraitToAsset("Interface\\Icons\\INV_Misc_Coin_17")
+    details_frame:EnableMouse(true)
+
+    table.insert(UISpecialFrames, "DeeprunPaymentDetailsFrame")
+
+    for field_number, label_text in ipairs(details_labels) do
+        details_fields[label_text] = makeCopyField(label_text, -36 - 26 * (field_number - 1))
+    end
+end
+
+
+local function setDetail(label_text, value)
+    local field = details_fields[label_text]
+    field.value = tostring(value)
+    field:SetText(field.value)
+    field:SetCursorPosition(0)
+end
+
+
+-- Fills the details window with one payment and shows it
+local function showPaymentDetails(ledger_row)
+    if details_frame == nil then
+        buildDetailsWindow()
+    end
+
+    -- Rows hold at most one item. No item shows as 0 and blank, the way the bank log has it.
+    local item_id = 0
+    local item_count = 0
+    local item_name = ""
+
+    if #ledger_row.attachment > 0 then
+        item_id = ledger_row.attachment[1].item_id
+        item_count = ledger_row.attachment[1].count
+        item_name = C_Item.GetItemInfo(item_id) or "Not loaded yet. Click the payment again."
+    end
+
+    local verified = "No"
+    if ledger_row.verified == 1 then
+        verified = "Yes"
+    end
+
+    setDetail("Transaction ID", ledger_row.transactionID)
+    setDetail("Player", ledger_row.name)
+    setDetail("Sent", date("%Y-%m-%d %H:%M:%S", ledger_row.time))
+    setDetail("Sent (Unix time)", ledger_row.time)
+    setDetail("Gold (copper)", ledger_row.amount)
+    setDetail("Item ID", item_id)
+    setDetail("Item name", item_name)
+    setDetail("Item count", item_count)
+    setDetail("Counts for (copper)", rowContribution(ledger_row))
+    setDetail("Verified", verified)
+
+    details_frame:Show()
+end
+
+
 -- a row int he payment list: date, player, gold, total, verified, with every other row shaded
 -- one at a time so they stay aligned. wrote this in python calude translated it lol
+-- Clicking one opens its details.
 local function getPaymentRow(row_number)
     local row = payment_rows[row_number]
 
     if row == nil then
         row = makeListRow(payments_scroll_child, row_number)
+        row:SetScript("OnClick", function(self)
+            showPaymentDetails(self.ledger_row)
+        end)
 
         row.date_label = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         row.date_label:SetPoint("LEFT", row, "LEFT", 8, 0)
@@ -364,6 +490,7 @@ local function updatePayments(payments)
 
     for row_number, ledger_row in ipairs(payments) do
         local row = getPaymentRow(row_number)
+        row.ledger_row = ledger_row
         row.date_label:SetText(friendlyDate(ledger_row.time))
         row.player_label:SetText(ledger_row.name)
         row.gold_label:SetText(moneyText(ledger_row.amount))

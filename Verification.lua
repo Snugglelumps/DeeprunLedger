@@ -14,14 +14,16 @@ local function logTime(years, months, days, hours)
 end
 
 
--- Every deposit in the money log and each tab's item log
+-- Every deposit in the money log and each tab's item log.
+-- Some log lines have no name: someone who's left or deleted, or a name the game hasn't
+-- looked up yet. Those can't match anyone's row, so they're skipped.
 local function readDeposits()
     local deposits = {}
 
     for index = 1, GetNumGuildBankMoneyTransactions() do
         local transaction_type, name, amount, years, months, days, hours = GetGuildBankMoneyTransaction(index)
 
-        if transaction_type == "deposit" then
+        if transaction_type == "deposit" and name ~= nil then
             table.insert(deposits, {
                 name = name,
                 time = logTime(years, months, days, hours),
@@ -36,7 +38,7 @@ local function readDeposits()
         for index = 1, GetNumGuildBankTransactions(tab) do
             local transaction_type, name, item_link, count, tab_from, tab_to, years, months, days, hours = GetGuildBankTransaction(tab, index)
 
-            if transaction_type == "deposit" then
+            if transaction_type == "deposit" and name ~= nil then
                 table.insert(deposits, {
                     name = name,
                     time = logTime(years, months, days, hours),
