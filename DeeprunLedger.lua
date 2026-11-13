@@ -57,16 +57,6 @@ local function rowContribution(row)
 end
 
 
--- Hides the row right away. The sync app spreads the ID to the other ledgers.
-local function deleteRow(transaction_id)
-    if shared.ignore_rows[transaction_id] then
-        return
-    end
-
-    table.insert(tithe_ledger.delete, transaction_id)
-end
-
-
 -- Every payment in the range, newest first
 local function getPaymentsInRange(start_date, end_date)
     local payments = {}
@@ -313,7 +303,7 @@ local function updateTotals(player_totals)
 end
 
 
--- a row int he payment list: date, player, gold, total, verified, delete, with every other row shaded
+-- a row int he payment list: date, player, gold, total, verified, with every other row shaded
 -- one at a time so they stay aligned. wrote this in python calude translated it lol
 local function getPaymentRow(row_number)
     local row = payment_rows[row_number]
@@ -342,14 +332,6 @@ local function getPaymentRow(row_number)
         row.verified_label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         row.verified_label:SetPoint("RIGHT", row, "RIGHT", -60, 0)
 
-        row.delete_button = makeFlatButton(row, "Delete", 44)
-        row.delete_button:SetHeight(16)
-        row.delete_button:SetPoint("RIGHT", row, "RIGHT", -4, 0)
-        row.delete_button:SetScript("OnClick", function()
-            deleteRow(row.transaction_id)
-            shared.refreshIfOpen()
-        end)
-
         payment_rows[row_number] = row
     end
 
@@ -377,7 +359,6 @@ local function updatePayments(payments)
 
     for row_number, ledger_row in ipairs(payments) do
         local row = getPaymentRow(row_number)
-        row.transaction_id = ledger_row.transactionID
         row.date_label:SetText(friendlyDate(ledger_row.time))
         row.player_label:SetText(ledger_row.name)
         row.gold_label:SetText(moneyText(ledger_row.amount))

@@ -1,5 +1,6 @@
 ## Interface: 16001
-## Title: Deeprun Ledger
+## Title: |cffc87533Deeprun|r Ledger
+## IconTexture: Interface\Icons\INV_Misc_Book_09
 ## Version: @project-version@
 ## Notes: Records guild bank tithes and shows who paid what. Type /drl.
 ## SavedVariables: tithe_ledger

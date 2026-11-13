@@ -28,7 +28,6 @@ local function readDeposits()
                 gold = amount,
                 item_id = 0,
                 count = 0,
-                used = false,
             })
         end
     end
@@ -44,8 +43,7 @@ local function readDeposits()
                     gold = 0,
                     item_id = C_Item.GetItemInfoInstant(item_link),
                     count = count,
-                    used = false,
-                })
+                    })
             end
         end
     end
@@ -54,55 +52,112 @@ local function readDeposits()
 end
 
 
-local function depositMatchesRow(deposit, row)
-    if deposit.used then
-        return false
+-- Puts every deposit in a group keyed by who, how much gold, which item, how many
+local function groupDeposits(deposits)
+    local deposit_groups = {}
+
+    for deposit_number, deposit in ipairs(deposits) do
+        local group_key = deposit.name .. "|" .. deposit.gold .. "|" .. deposit.item_id .. "|" .. deposit.count
+
+        if deposit_groups[group_key] == nil then
+            deposit_groups[group_key] = {}
+        end
+
+        table.insert(deposit_groups[group_key], deposit)
     end
 
-    if deposit.name ~= row.name then
-        return false
-    end
-
-    if math.abs(deposit.time - row.time) > match_window_seconds then
-        return false
-    end
-
-    -- A gold row
-    if #row.attachment == 0 then
-        return deposit.item_id == 0 and deposit.gold == row.amount
-    end
-
-    local item = row.attachment[1]
-    return deposit.item_id == item.item_id and deposit.count == item.count
+    return deposit_groups
 end
 
 
--- Marks the first unused deposit that matches. One deposit can only back one row.
-local function useMatchingDeposit(deposits, row)
-    for deposit_number, deposit in ipairs(deposits) do
-        if depositMatchesRow(deposit, row) then
-            deposit.used = true
-            return true
+-- Puts every row that isn't hidden in a group, with the same key as its deposit would have
+local function groupRows()
+    local row_groups = {}
+
+    for row_number, row in ipairs(tithe_ledger.data) do
+        if not shared.ignore_rows[row.transactionID] then
+            local item_id = 0
+            local item_count = 0
+
+            if #row.attachment > 0 then
+                item_id = row.attachment[1].item_id
+                item_count = row.attachment[1].count
+            end
+
+            local group_key = row.name .. "|" .. row.amount .. "|" .. item_id .. "|" .. item_count
+
+            if row_groups[group_key] == nil then
+                row_groups[group_key] = {}
+            end
+
+            table.insert(row_groups[group_key], row)
         end
     end
 
-    return false
+    return row_groups
+end
+
+
+-- Pairs the closest row and deposit, removes both, and repeats until no pair is inside the window.
+-- Returns the rows that got a deposit. Paired deposits are gone from the deposits list afterwards.
+local function pairClosest(rows, deposits)
+    local paired_rows = {}
+
+    while true do
+        local best_row_number = nil
+        local best_deposit_number = nil
+        local best_gap = match_window_seconds + 1   -- anything inside the window beats this
+
+        for row_number, row in ipairs(rows) do
+            for deposit_number, deposit in ipairs(deposits) do
+                local gap = math.abs(deposit.time - row.time)
+
+                if gap < best_gap then
+                    best_row_number = row_number
+                    best_deposit_number = deposit_number
+                    best_gap = gap
+                end
+            end
+        end
+
+        -- No pair left inside the window
+        if best_row_number == nil then
+            return paired_rows
+        end
+
+        table.insert(paired_rows, rows[best_row_number])
+        table.remove(rows, best_row_number)
+        table.remove(deposits, best_deposit_number)
+    end
 end
 
 
 local function verifyRows()
-    local deposits = readDeposits()
+    local deposit_groups = groupDeposits(readDeposits())
+    local row_groups = groupRows()
 
-    -- Verified rows claim their deposits first, so running this again can't hand one to a second row
-    for row_number, row in ipairs(tithe_ledger.data) do
-        if row.verified == 1 and not shared.ignore_rows[row.transactionID] then
-            useMatchingDeposit(deposits, row)
-        end
-    end
+    for group_key, deposits_in_group in pairs(deposit_groups) do
+        local rows_in_group = row_groups[group_key]
 
-    for row_number, row in ipairs(tithe_ledger.data) do
-        if row.verified == 0 and not shared.ignore_rows[row.transactionID] then
-            if useMatchingDeposit(deposits, row) then
+        if rows_in_group ~= nil then
+            local verified_rows = {}
+            local unverified_rows = {}
+
+            for row_number, row in ipairs(rows_in_group) do
+                if row.verified == 1 then
+                    table.insert(verified_rows, row)
+                else
+                    table.insert(unverified_rows, row)
+                end
+            end
+
+            -- Green rows take their deposits first, so a fake row can't take one.
+            -- A green row with no deposit left is just dropped. It stays green.
+            pairClosest(verified_rows, deposits_in_group)
+
+            -- Whatever deposits are left can turn unverified rows green
+            local newly_verified_rows = pairClosest(unverified_rows, deposits_in_group)
+            for row_number, row in ipairs(newly_verified_rows) do
                 row.verified = 1
             end
         end
