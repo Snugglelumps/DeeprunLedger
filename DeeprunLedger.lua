@@ -155,45 +155,62 @@ end
 
 
 ------------------------------------------------------------
--- Custom button, thanks Claude
+-- Window pieces, all Blizzard's own art, like FishLog's windows
 ------------------------------------------------------------
 
-local function makeFlatButton(parent, text, width)
-    local button = CreateFrame("Button", nil, parent)
+local function makeButton(parent, text, width)
+    local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
     button:SetSize(width, 22)
-    button:SetNormalFontObject("GameFontHighlightSmall")
     button:SetText(text)
-
-    button.background = button:CreateTexture(nil, "BACKGROUND")
-    button.background:SetAllPoints()
-    button.background:SetColorTexture(1, 1, 1, 0.07)
-
-    local hover = button:CreateTexture(nil, "HIGHLIGHT")
-    hover:SetAllPoints()
-    hover:SetColorTexture(1, 1, 1, 0.08)
-
     return button
 end
 
+-- The range you're looking at stays lit
 local function setButtonSelected(button, is_selected)
     if is_selected then
-        button.background:SetColorTexture(1, 0.82, 0, 0.30)
+        button:LockHighlight()
     else
-        button.background:SetColorTexture(1, 1, 1, 0.07)
+        button:UnlockHighlight()
     end
 end
 
--- A slightly lighter box that groups one section of the page
-local function makePanel(parent, left, top, width, height)
-    local panel = CreateFrame("Frame", nil, parent)
-    panel:SetPoint("TOPLEFT", parent, "TOPLEFT", left, -top)
-    panel:SetSize(width, height)
+-- A sunken box with the Auction House's list background, for a list to sit in
+local function makeListBox(parent)
+    local list_box = CreateFrame("Frame", nil, parent, "InsetFrameTemplate")
 
-    local fill = panel:CreateTexture(nil, "BACKGROUND")
-    fill:SetAllPoints()
-    fill:SetColorTexture(1, 1, 1, 0.04)
+    local art = list_box:CreateTexture(nil, "BACKGROUND", nil, 2)
+    art:SetAtlas("auctionhouse-background-index")
+    art:SetPoint("TOPLEFT", 3, -3)
+    art:SetPoint("BOTTOMRIGHT", -3, 3)
 
-    return panel
+    return list_box
+end
+
+-- A list row that glows like the Auction House's when you hover it.
+-- A Button, because only buttons draw their HIGHLIGHT layer on hover.
+local function makeListRow(parent, row_number)
+    local row = CreateFrame("Button", nil, parent)
+    row:SetSize(532, 18)
+    row:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -18 * (row_number - 1))
+
+    local hover = row:CreateTexture(nil, "HIGHLIGHT")
+    hover:SetAllPoints()
+    hover:SetAtlas("auctionhouse-ui-row-highlight")
+    hover:SetBlendMode("ADD")
+
+    row.shade = row:CreateTexture(nil, "BACKGROUND")
+    row.shade:SetAllPoints()
+    row.shade:SetColorTexture(1, 1, 1, 0.04)
+
+    return row
+end
+
+-- A column heading, in gold above its list
+local function makeHeading(list_box, text, point, x)
+    local heading = list_box:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    heading:SetPoint("BOTTOM" .. point, list_box, "TOP" .. point, x, 4)
+    heading:SetText(text)
+    return heading
 end
 
 
@@ -232,13 +249,7 @@ local function getTotalRow(row_number)
     local row = total_rows[row_number]
 
     if row == nil then
-        row = CreateFrame("Frame", nil, totals_scroll_child)
-        row:SetSize(532, 18)
-        row:SetPoint("TOPLEFT", totals_scroll_child, "TOPLEFT", 0, -18 * (row_number - 1))
-
-        row.shade = row:CreateTexture(nil, "BACKGROUND")
-        row.shade:SetAllPoints()
-        row.shade:SetColorTexture(1, 1, 1, 0.04)
+        row = makeListRow(totals_scroll_child, row_number)
 
         row.player_label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         row.player_label:SetPoint("LEFT", row, "LEFT", 8, 0)
@@ -309,13 +320,7 @@ local function getPaymentRow(row_number)
     local row = payment_rows[row_number]
 
     if row == nil then
-        row = CreateFrame("Frame", nil, payments_scroll_child)
-        row:SetSize(532, 18)
-        row:SetPoint("TOPLEFT", payments_scroll_child, "TOPLEFT", 0, -18 * (row_number - 1))
-
-        row.shade = row:CreateTexture(nil, "BACKGROUND")
-        row.shade:SetAllPoints()
-        row.shade:SetColorTexture(1, 1, 1, 0.04)
+        row = makeListRow(payments_scroll_child, row_number)
 
         row.date_label = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         row.date_label:SetPoint("LEFT", row, "LEFT", 8, 0)
@@ -488,12 +493,29 @@ end
 -- window
 ------------------------------------------------------------
 
+-- A scrolling list inside a list box, rows 532 wide. Returns the scroll child the rows go on.
+local function makeScrollList(list_box)
+    local scroll = CreateFrame("ScrollFrame", nil, list_box, "UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", list_box, "TOPLEFT", 8, -6)
+    scroll:SetPoint("BOTTOMRIGHT", list_box, "BOTTOMRIGHT", -28, 6)
+
+    local scroll_child = CreateFrame("Frame", nil, scroll)
+    scroll_child:SetSize(532, 100)
+    scroll:SetScrollChild(scroll_child)
+
+    return scroll_child
+end
+
+
+-- The window is Blizzard's portrait frame, like the character and profession windows.
+-- The coin in the portrait takes the top left corner, so the top row starts right of it.
 local function buildWindow()
-    main_frame = CreateFrame("Frame", "DeeprunLedgerFrame", UIParent, "BasicFrameTemplateWithInset")
-    main_frame:SetSize(600, 560)
+    main_frame = CreateFrame("Frame", "DeeprunLedgerFrame", UIParent, "PortraitFrameTemplate")
+    main_frame:SetSize(600, 600)
     main_frame:SetPoint("CENTER")
     -- The version is ## Version: in DeeprunLedger.toc. The sync app checks the same number.
-    main_frame.TitleText:SetText("Deeprun Ledger " .. C_AddOns.GetAddOnMetadata(addon_name, "Version"))
+    main_frame:SetTitle("Deeprun Ledger " .. C_AddOns.GetAddOnMetadata(addon_name, "Version"))
+    main_frame:SetPortraitToAsset("Interface\\Icons\\INV_Misc_Coin_17")
     main_frame:SetMovable(true)
     main_frame:EnableMouse(true)
     main_frame:RegisterForDrag("LeftButton")
@@ -504,38 +526,29 @@ local function buildWindow()
     -- Escape closes it, like other game windows
     table.insert(UISpecialFrames, "DeeprunLedgerFrame")
 
-    -- A flat dark background over the template's stone texture, below the title bar
-    local content = CreateFrame("Frame", nil, main_frame)
-    content:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 3, -22)
-    content:SetPoint("BOTTOMRIGHT", main_frame, "BOTTOMRIGHT", -3, 3)
-
-    local content_background = content:CreateTexture(nil, "BACKGROUND")
-    content_background:SetAllPoints()
-    content_background:SetColorTexture(0.05, 0.05, 0.06, 0.97)
-
     -- Range row: [Week] [Month] [All]   [start date] to [end date] [Go]
-    week_button = makeFlatButton(content, "Week", 60)
-    week_button:SetPoint("TOPLEFT", content, "TOPLEFT", 12, -10)
+    week_button = makeButton(main_frame, "Week", 60)
+    week_button:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 70, -32)
     week_button:SetScript("OnClick", function()
         fillWeek()
         refreshView()
     end)
 
-    month_button = makeFlatButton(content, "Month", 60)
+    month_button = makeButton(main_frame, "Month", 60)
     month_button:SetPoint("LEFT", week_button, "RIGHT", 4, 0)
     month_button:SetScript("OnClick", function()
         fillMonth()
         refreshView()
     end)
 
-    all_button = makeFlatButton(content, "All", 60)
+    all_button = makeButton(main_frame, "All", 60)
     all_button:SetPoint("LEFT", month_button, "RIGHT", 4, 0)
     all_button:SetScript("OnClick", function()
         fillAll()
         refreshView()
     end)
 
-    start_date_field = CreateFrame("EditBox", nil, content, "InputBoxTemplate")
+    start_date_field = CreateFrame("EditBox", nil, main_frame, "InputBoxTemplate")
     start_date_field:SetSize(86, 20)
     start_date_field:SetPoint("LEFT", all_button, "RIGHT", 24, 0)
     start_date_field:SetAutoFocus(false)
@@ -545,11 +558,11 @@ local function buildWindow()
         refreshView()
     end)
 
-    local to_label = content:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    local to_label = main_frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     to_label:SetPoint("LEFT", start_date_field, "RIGHT", 6, 0)
     to_label:SetText("to")
 
-    end_date_field = CreateFrame("EditBox", nil, content, "InputBoxTemplate")
+    end_date_field = CreateFrame("EditBox", nil, main_frame, "InputBoxTemplate")
     end_date_field:SetSize(86, 20)
     end_date_field:SetPoint("LEFT", to_label, "RIGHT", 12, 0)
     end_date_field:SetAutoFocus(false)
@@ -559,91 +572,59 @@ local function buildWindow()
         refreshView()
     end)
 
-    local go_button = makeFlatButton(content, "Go", 40)
+    local go_button = makeButton(main_frame, "Go", 40)
     go_button:SetPoint("LEFT", end_date_field, "RIGHT", 8, 0)
     go_button:SetScript("OnClick", function()
         useTypedDates()
         refreshView()
     end)
 
-    message_label = content:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    message_label:SetPoint("TOPLEFT", content, "TOPLEFT", 14, -38)
+    message_label = main_frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    message_label:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 72, -62)
 
-    sync_label = content:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    sync_label:SetPoint("TOPRIGHT", content, "TOPRIGHT", -14, -38)
+    sync_label = main_frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    sync_label:SetPoint("TOPRIGHT", main_frame, "TOPRIGHT", -16, -62)
 
-    -- Totals panel
-    local totals_panel = makePanel(content, 12, 56, 570, 180)
+    -- Totals: title and headings on the window, the list in its box under them
+    local totals_box = makeListBox(main_frame)
+    totals_box:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 12, -120)
+    totals_box:SetPoint("TOPRIGHT", main_frame, "TOPRIGHT", -12, -120)
+    totals_box:SetHeight(170)
 
-    local totals_title = totals_panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    totals_title:SetPoint("TOPLEFT", totals_panel, "TOPLEFT", 12, -10)
+    local totals_title = main_frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    totals_title:SetPoint("BOTTOMLEFT", totals_box, "TOPLEFT", 4, 22)
     totals_title:SetText("Totals")
 
-    grand_total_label = totals_panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    grand_total_label:SetPoint("TOPRIGHT", totals_panel, "TOPRIGHT", -12, -12)
+    grand_total_label = main_frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    grand_total_label:SetPoint("BOTTOMRIGHT", totals_box, "TOPRIGHT", -4, 22)
 
-    local totals_player_heading = totals_panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    totals_player_heading:SetPoint("TOPLEFT", totals_panel, "TOPLEFT", 16, -30)
-    totals_player_heading:SetText("Player")
+    -- Each heading sits over its column. The right ones are 44 in, for the scroll bar.
+    makeHeading(totals_box, "Player", "LEFT", 16)
+    makeHeading(totals_box, "Payments", "LEFT", 208)
+    makeHeading(totals_box, "Share", "LEFT", 308)
+    makeHeading(totals_box, "Total", "RIGHT", -44)
 
-    local totals_payments_heading = totals_panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    totals_payments_heading:SetPoint("TOPLEFT", totals_panel, "TOPLEFT", 208, -30)
-    totals_payments_heading:SetText("Payments")
-
-    local totals_share_heading = totals_panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    totals_share_heading:SetPoint("TOPLEFT", totals_panel, "TOPLEFT", 308, -30)
-    totals_share_heading:SetText("Share")
-
-    local totals_total_heading = totals_panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    totals_total_heading:SetPoint("TOPRIGHT", totals_panel, "TOPRIGHT", -38, -30)
-    totals_total_heading:SetText("Total")
-
-    local totals_scroll = CreateFrame("ScrollFrame", nil, totals_panel, "UIPanelScrollFrameTemplate")
-    totals_scroll:SetPoint("TOPLEFT", totals_panel, "TOPLEFT", 8, -46)
-    totals_scroll:SetPoint("BOTTOMRIGHT", totals_panel, "BOTTOMRIGHT", -30, 8)
-
-    totals_scroll_child = CreateFrame("Frame", nil, totals_scroll)
-    totals_scroll_child:SetSize(532, 100)
-    totals_scroll:SetScrollChild(totals_scroll_child)
+    totals_scroll_child = makeScrollList(totals_box)
 
     totals_message = totals_scroll_child:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     totals_message:SetPoint("TOPLEFT", totals_scroll_child, "TOPLEFT", 8, -2)
 
-    -- Payments panel
-    local payments_panel = makePanel(content, 12, 246, 570, 284)
+    -- Payments: the same, filling the rest of the window
+    local payments_box = makeListBox(main_frame)
+    payments_box:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 12, -336)
+    payments_box:SetPoint("BOTTOMRIGHT", main_frame, "BOTTOMRIGHT", -12, 12)
 
-    local payments_title = payments_panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    payments_title:SetPoint("TOPLEFT", payments_panel, "TOPLEFT", 12, -10)
+    local payments_title = main_frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    payments_title:SetPoint("BOTTOMLEFT", payments_box, "TOPLEFT", 4, 22)
     payments_title:SetText("Payments")
 
-    local payments_date_heading = payments_panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    payments_date_heading:SetPoint("TOPLEFT", payments_panel, "TOPLEFT", 16, -30)
-    payments_date_heading:SetText("Sent")
+    makeHeading(payments_box, "Sent", "LEFT", 16)
+    makeHeading(payments_box, "Player", "LEFT", 138)
+    makeHeading(payments_box, "Gold", "RIGHT", -246)
+    makeHeading(payments_box, "Total", "RIGHT", -146)
+    makeHeading(payments_box, "Verified", "RIGHT", -96)
 
-    local payments_player_heading = payments_panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    payments_player_heading:SetPoint("TOPLEFT", payments_panel, "TOPLEFT", 138, -30)
-    payments_player_heading:SetText("Player")
-
-    -- Each heading sits 30 further left than its column, for the scroll bar
-    local payments_gold_heading = payments_panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    payments_gold_heading:SetPoint("TOPRIGHT", payments_panel, "TOPRIGHT", -240, -30)
-    payments_gold_heading:SetText("Gold")
-
-    local payments_total_heading = payments_panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    payments_total_heading:SetPoint("TOPRIGHT", payments_panel, "TOPRIGHT", -140, -30)
-    payments_total_heading:SetText("Total")
-
-    local payments_verified_heading = payments_panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    payments_verified_heading:SetPoint("TOPRIGHT", payments_panel, "TOPRIGHT", -90, -30)
-    payments_verified_heading:SetText("Verified")
-
-    local payments_scroll = CreateFrame("ScrollFrame", nil, payments_panel, "UIPanelScrollFrameTemplate")
-    payments_scroll:SetPoint("TOPLEFT", payments_panel, "TOPLEFT", 8, -46)
-    payments_scroll:SetPoint("BOTTOMRIGHT", payments_panel, "BOTTOMRIGHT", -30, 8)
-
-    payments_scroll_child = CreateFrame("Frame", nil, payments_scroll)
-    payments_scroll_child:SetSize(532, 100)
-    payments_scroll:SetScrollChild(payments_scroll_child)
+    payments_scroll_child = makeScrollList(payments_box)
 
     payments_message = payments_scroll_child:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     payments_message:SetPoint("TOPLEFT", payments_scroll_child, "TOPLEFT", 8, -2)
