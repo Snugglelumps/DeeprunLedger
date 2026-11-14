@@ -2,7 +2,7 @@
 -- Right-click a player in Totals. Their Tithe only does it if you're the Guild Master or an officer.
 --
 -- Saved (see DeeprunLedger.toc):
---   deeprun_commands  commands their Tithe hasn't said DONE to yet, one per player, newest wins.
+--   deeprun_commands  commands their Tithe hasn't said DNE to yet, one per player, newest wins.
 --                     { player = ..., time = ..., owed = copper }
 
 local addon_name, shared = ...
@@ -21,9 +21,10 @@ local function ledgerPrint(text)
 end
 
 
--- Saves it until their Tithe says DONE, and sends it now in case they're online
+-- Saves it until their Tithe says DNE, and sends it now in case they're online.
+-- Server time, so a PC clock that's off can't make an old command look new.
 local function setOwed(player, copper)
-    deeprun_commands[player] = { player = player, time = time(), owed = copper }
+    deeprun_commands[player] = { player = player, time = GetServerTime(), owed = copper }
     send(shared.setMessage(deeprun_commands[player]))
 
     ledgerPrint("Setting " .. player .. "'s tithe to " .. GetMoneyString(copper)
@@ -38,13 +39,9 @@ local function sendWaitingCommands()
 end
 
 
--- DONE from the player's own Tithe, for the newest command we have for them
-local function commandDone(message, sender)
+-- DNE from the player's own Tithe, for the newest command we have for them
+function shared.commandDone(message, sender)
     local message_type, player, command_time = strsplit("|", message)
-
-    if message_type ~= "DONE" then
-        return
-    end
 
     local command = deeprun_commands[player]
     if command == nil then
@@ -55,7 +52,7 @@ local function commandDone(message, sender)
         return
     end
 
-    -- DONE to an older one we've since replaced
+    -- DNE to an older one we've since replaced
     if tonumber(command_time) < command.time then
         return
     end
@@ -169,21 +166,12 @@ end
 
 local commands_frame = CreateFrame("Frame")
 commands_frame:RegisterEvent("PLAYER_LOGIN")
-commands_frame:RegisterEvent("CHAT_MSG_ADDON")
 
-commands_frame:SetScript("OnEvent", function(self, event, ...)
-    if event == "PLAYER_LOGIN" then
-        if deeprun_commands == nil then
-            deeprun_commands = {}
-        end
-
-        sendWaitingCommands()
-        C_Timer.NewTicker(resend_every_seconds, sendWaitingCommands)
-
-    elseif event == "CHAT_MSG_ADDON" then
-        local message_prefix, message, channel, sender = ...
-        if message_prefix == shared.prefix then
-            commandDone(message, sender)
-        end
+commands_frame:SetScript("OnEvent", function(self, event)
+    if deeprun_commands == nil then
+        deeprun_commands = {}
     end
+
+    sendWaitingCommands()
+    C_Timer.NewTicker(resend_every_seconds, sendWaitingCommands)
 end)

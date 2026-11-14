@@ -1,5 +1,6 @@
--- Deeprun Ledger: checking rows against the guild bank's own logs
--- A row is verified once a deposit in the log has the same name and the same gold or items.
+-- Deeprun Ledger: checking rows against the guild bank's money log
+-- A row is verified once a deposit in the log has the same name and the same gold.
+-- Old item rows never verify. They count for nothing anyway.
 
 local addon_name, shared = ...
 
@@ -14,7 +15,7 @@ local function logTime(years, months, days, hours)
 end
 
 
--- Every deposit in the money log and each tab's item log.
+-- Every deposit in the money log.
 -- Some log lines have no name: someone who's left or deleted, or a name the game hasn't
 -- looked up yet. Those can't match anyone's row, so they're skipped.
 local function readDeposits()
@@ -28,25 +29,7 @@ local function readDeposits()
                 name = name,
                 time = logTime(years, months, days, hours),
                 gold = amount,
-                item_id = 0,
-                count = 0,
             })
-        end
-    end
-
-    for tab = 1, GetNumGuildBankTabs() do
-        for index = 1, GetNumGuildBankTransactions(tab) do
-            local transaction_type, name, item_link, count, tab_from, tab_to, years, months, days, hours = GetGuildBankTransaction(tab, index)
-
-            if transaction_type == "deposit" and name ~= nil then
-                table.insert(deposits, {
-                    name = name,
-                    time = logTime(years, months, days, hours),
-                    gold = 0,
-                    item_id = C_Item.GetItemInfoInstant(item_link),
-                    count = count,
-                    })
-            end
         end
     end
 
@@ -54,12 +37,12 @@ local function readDeposits()
 end
 
 
--- Puts every deposit in a group keyed by who, how much gold, which item, how many
+-- Puts every deposit in a group keyed by who and how much gold
 local function groupDeposits(deposits)
     local deposit_groups = {}
 
     for deposit_number, deposit in ipairs(deposits) do
-        local group_key = deposit.name .. "|" .. deposit.gold .. "|" .. deposit.item_id .. "|" .. deposit.count
+        local group_key = deposit.name .. "|" .. deposit.gold
 
         if deposit_groups[group_key] == nil then
             deposit_groups[group_key] = {}
@@ -78,15 +61,7 @@ local function groupRows()
 
     for row_number, row in ipairs(tithe_ledger.data) do
         if not shared.ignore_rows[row.transactionID] then
-            local item_id = 0
-            local item_count = 0
-
-            if #row.attachment > 0 then
-                item_id = row.attachment[1].item_id
-                item_count = row.attachment[1].count
-            end
-
-            local group_key = row.name .. "|" .. row.amount .. "|" .. item_id .. "|" .. item_count
+            local group_key = row.name .. "|" .. row.amount
 
             if row_groups[group_key] == nil then
                 row_groups[group_key] = {}
@@ -176,10 +151,6 @@ verification_frame:SetScript("OnEvent", function(self, event, interaction_type)
     -- The money log is the tab after the last item tab.
     if event == "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" and interaction_type == Enum.PlayerInteractionType.GuildBanker then
         QueryGuildBankLog(MAX_GUILDBANK_TABS + 1)
-
-        for tab = 1, GetNumGuildBankTabs() do
-            QueryGuildBankLog(tab)
-        end
 
     elseif event == "GUILDBANKLOG_UPDATE" then
         verifyRows()

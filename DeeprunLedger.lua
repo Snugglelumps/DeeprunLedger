@@ -1,8 +1,9 @@
 -- Deeprun Ledger
 -- The treasurer's side: shows who paid what in a date range. Open it with /drl.
 -- Ingest.lua records the rows, Verification.lua checks them against the guild bank.
+-- Ready.lua picks the one ledger that answers, Leaderboard.lua works out the weekly board.
 
--- The prefix, rates, transaction IDs and item credit come from DeeprunShared.lua
+-- The prefix, settings, transaction IDs and messages come from DeeprunShared.lua
 local addon_name, shared = ...
 
 
@@ -19,7 +20,8 @@ local sync_interval_seconds = 600
 --       amount = <gold, in copper, 0 for items>, attachment = {} or { { item_id = 2589, count = 20 } },
 --       verified = 0 or 1 }
 --   delete  a list of transactionIDs. Those rows stay in data, hidden. Nothing ever comes off the list.
--- Rows store what was deposited, never what it's worth.
+-- Only gold counts. Items aren't tithes anymore, so old item rows count for nothing,
+-- but they keep their attachment and new rows keep the field, so the format doesn't change.
 
 -- Every transaction ID in data. A repeated one gets ACKed but not added again.
 shared.seen_transaction_ids = {}
@@ -41,20 +43,6 @@ function shared.rebuildIgnoreRows()
 end
 
 
--- Gold plus what the items are worth. An item that hasn't loaded yet counts 0 until it does.
-local function rowContribution(row)
-    local contribution = row.amount
-
-    for attachment_number, item in ipairs(row.attachment) do
-        if C_Item.GetItemInfo(item.item_id) == nil then
-            C_Item.RequestLoadItemDataByID(item.item_id)
-        end
-
-        contribution = contribution + shared.itemCreditValue(item.item_id, item.count)
-    end
-
-    return math.floor(contribution)
-end
 
 
 -- Every payment in the range, newest first
@@ -91,7 +79,7 @@ local function getPlayerTotals(payments)
             table.insert(player_totals, player_total)
         end
 
-        player_total.copper = player_total.copper + rowContribution(row)
+        player_total.copper = player_total.copper + row.amount
         player_total.payments = player_total.payments + 1
     end
 
@@ -222,6 +210,7 @@ end
 ------------------------------------------------------------
 
 local main_frame = nil
+local ledger_tab = nil
 
 -- Range controls
 local week_button = nil
@@ -335,9 +324,7 @@ local details_labels = {
     "Sent (Unix time)",
     "Gold (copper)",
     "Item ID",
-    "Item name",
     "Item count",
-    "Counts for (copper)",
     "Verified",
 }
 
@@ -374,11 +361,11 @@ local function makeCopyField(label_text, top)
 end
 
 
--- The same portrait window as the ledger, beside it on the right
+-- Blizzard's portrait window, beside the guild window, past the side tabs
 local function buildDetailsWindow()
     details_frame = CreateFrame("Frame", "DeeprunPaymentDetailsFrame", main_frame, "PortraitFrameTemplate")
     details_frame:SetSize(480, 46 + 26 * #details_labels)
-    details_frame:SetPoint("TOPLEFT", main_frame, "TOPRIGHT", 4, 0)
+    details_frame:SetPoint("TOPLEFT", CommunitiesFrame, "TOPRIGHT", 44, 0)
     details_frame:SetTitle("Payment")
     details_frame:SetPortraitToAsset("Interface\\Icons\\INV_Misc_Coin_17")
     details_frame:EnableMouse(true)
@@ -405,15 +392,13 @@ local function showPaymentDetails(ledger_row)
         buildDetailsWindow()
     end
 
-    -- Rows hold at most one item. No item shows as 0 and blank, the way the bank log has it.
+    -- Only old item rows have an item, and they count for nothing. No item shows as 0.
     local item_id = 0
     local item_count = 0
-    local item_name = ""
 
     if #ledger_row.attachment > 0 then
         item_id = ledger_row.attachment[1].item_id
         item_count = ledger_row.attachment[1].count
-        item_name = C_Item.GetItemInfo(item_id) or "Not loaded yet. Click the payment again."
     end
 
     local verified = "No"
@@ -427,25 +412,29 @@ local function showPaymentDetails(ledger_row)
     setDetail("Sent (Unix time)", ledger_row.time)
     setDetail("Gold (copper)", ledger_row.amount)
     setDetail("Item ID", item_id)
-    setDetail("Item name", item_name)
     setDetail("Item count", item_count)
-    setDetail("Counts for (copper)", rowContribution(ledger_row))
     setDetail("Verified", verified)
 
     details_frame:Show()
 end
 
 
--- a row int he payment list: date, player, gold, total, verified, with every other row shaded
+-- a row int he payment list: date, player, gold, verified, with every other row shaded
 -- one at a time so they stay aligned. wrote this in python calude translated it lol
--- Clicking one opens its details.
+-- Clicking one opens its details. Right-clicking asks to delete it.
 local function getPaymentRow(row_number)
     local row = payment_rows[row_number]
 
     if row == nil then
         row = makeListRow(payments_scroll_child, row_number)
-        row:SetScript("OnClick", function(self)
-            showPaymentDetails(self.ledger_row)
+        row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        row:SetScript("OnClick", function(self, button)
+            if button == "RightButton" then
+                StaticPopup_Show("DEEPRUN_DELETE_PAYMENT", self.ledger_row.name,
+                    moneyText(self.ledger_row.amount), self.ledger_row)
+            else
+                showPaymentDetails(self.ledger_row)
+            end
         end)
 
         row.date_label = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
@@ -455,10 +444,7 @@ local function getPaymentRow(row_number)
         row.player_label:SetPoint("LEFT", row, "LEFT", 130, 0)
 
         row.gold_label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.gold_label:SetPoint("RIGHT", row, "RIGHT", -210, 0)
-
-        row.total_label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.total_label:SetPoint("RIGHT", row, "RIGHT", -110, 0)
+        row.gold_label:SetPoint("RIGHT", row, "RIGHT", -110, 0)
 
         row.verified_label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         row.verified_label:SetPoint("RIGHT", row, "RIGHT", -60, 0)
@@ -494,7 +480,6 @@ local function updatePayments(payments)
         row.date_label:SetText(friendlyDate(ledger_row.time))
         row.player_label:SetText(ledger_row.name)
         row.gold_label:SetText(moneyText(ledger_row.amount))
-        row.total_label:SetText(moneyText(rowContribution(ledger_row)))
 
         if ledger_row.verified == 1 then
             row.verified_label:SetText("Yes")
@@ -573,6 +558,28 @@ local function refreshView()
 end
 
 
+-- On the delete list it's hidden everywhere. The sync app shares the list with every
+-- other ledger, and nothing ever comes off it, so this can't be undone from here.
+local function deletePayment(ledger_row)
+    table.insert(tithe_ledger.delete, ledger_row.transactionID)
+    refreshView()
+end
+
+
+-- The payment's row is passed in as the popup's data
+StaticPopupDialogs["DEEPRUN_DELETE_PAYMENT"] = {
+    text = "Delete %s's payment of %s?\n\nIt's hidden on every ledger once it syncs, and can't be undone.",
+    button1 = "Delete",
+    button2 = "Cancel",
+    OnAccept = function(self, ledger_row)
+        deletePayment(ledger_row)
+    end,
+    timeout = 0,
+    hideOnEscape = true,
+    showAlert = true,
+}
+
+
 ------------------------------------------------------------
 -- Range buttons: fill in the two date fields
 ------------------------------------------------------------
@@ -634,28 +641,21 @@ local function makeScrollList(list_box)
 end
 
 
--- The window is Blizzard's portrait frame, like the character and profession windows.
--- The coin in the portrait takes the top left corner, so the top row starts right of it.
-local function buildWindow()
-    main_frame = CreateFrame("Frame", "DeeprunLedgerFrame", UIParent, "PortraitFrameTemplate")
-    main_frame:SetSize(600, 600)
-    main_frame:SetPoint("CENTER")
-    -- The version is ## Version: in DeeprunLedger.toc. The sync app checks the same number.
-    main_frame:SetTitle("Deeprun Ledger " .. C_AddOns.GetAddOnMetadata(addon_name, "Version"))
-    main_frame:SetPortraitToAsset("Interface\\Icons\\INV_Misc_Coin_17")
-    main_frame:SetMovable(true)
-    main_frame:EnableMouse(true)
-    main_frame:RegisterForDrag("LeftButton")
-    main_frame:SetScript("OnDragStart", main_frame.StartMoving)
-    main_frame:SetScript("OnDragStop", main_frame.StopMovingOrSizing)
-    main_frame:Hide()
+-- The Ledger's page on the guild window (DeeprunShared.lua), about 635 by 377.
+-- Opening it fills in the last week the first time, then keeps whatever range was picked.
+local function buildLedgerPage()
+    main_frame = shared.makeGuildPage()
+    main_frame:SetScript("OnShow", function()
+        if start_date_field:GetText() == "" then
+            fillWeek()
+        end
 
-    -- Escape closes it, like other game windows
-    table.insert(UISpecialFrames, "DeeprunLedgerFrame")
+        refreshView()
+    end)
 
     -- Range row: [Week] [Month] [All]   [start date] to [end date] [Go]
     week_button = makeButton(main_frame, "Week", 60)
-    week_button:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 70, -32)
+    week_button:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 12, -10)
     week_button:SetScript("OnClick", function()
         fillWeek()
         refreshView()
@@ -706,17 +706,21 @@ local function buildWindow()
         refreshView()
     end)
 
+    local settings_button = makeButton(main_frame, "Settings", 80)
+    settings_button:SetPoint("TOPRIGHT", main_frame, "TOPRIGHT", -12, -10)
+    settings_button:SetScript("OnClick", shared.showSettingsWindow)
+
     message_label = main_frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    message_label:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 72, -62)
+    message_label:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 14, -38)
 
     sync_label = main_frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    sync_label:SetPoint("TOPRIGHT", main_frame, "TOPRIGHT", -16, -62)
+    sync_label:SetPoint("TOPRIGHT", main_frame, "TOPRIGHT", -14, -41)
 
     -- Totals: title and headings on the window, the list in its box under them
     local totals_box = makeListBox(main_frame)
-    totals_box:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 12, -120)
-    totals_box:SetPoint("TOPRIGHT", main_frame, "TOPRIGHT", -12, -120)
-    totals_box:SetHeight(170)
+    totals_box:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 8, -92)
+    totals_box:SetPoint("TOPRIGHT", main_frame, "TOPRIGHT", -8, -92)
+    totals_box:SetHeight(104)
 
     local totals_title = main_frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     totals_title:SetPoint("BOTTOMLEFT", totals_box, "TOPLEFT", 4, 22)
@@ -736,10 +740,10 @@ local function buildWindow()
     totals_message = totals_scroll_child:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     totals_message:SetPoint("TOPLEFT", totals_scroll_child, "TOPLEFT", 8, -2)
 
-    -- Payments: the same, filling the rest of the window
+    -- Payments: the same, filling the rest of the page
     local payments_box = makeListBox(main_frame)
-    payments_box:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 12, -336)
-    payments_box:SetPoint("BOTTOMRIGHT", main_frame, "BOTTOMRIGHT", -12, 12)
+    payments_box:SetPoint("TOPLEFT", totals_box, "BOTTOMLEFT", 0, -46)
+    payments_box:SetPoint("BOTTOMRIGHT", main_frame, "BOTTOMRIGHT", -8, 8)
 
     local payments_title = main_frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     payments_title:SetPoint("BOTTOMLEFT", payments_box, "TOPLEFT", 4, 22)
@@ -747,8 +751,7 @@ local function buildWindow()
 
     makeHeading(payments_box, "Sent", "LEFT", 16)
     makeHeading(payments_box, "Player", "LEFT", 138)
-    makeHeading(payments_box, "Gold", "RIGHT", -246)
-    makeHeading(payments_box, "Total", "RIGHT", -146)
+    makeHeading(payments_box, "Gold", "RIGHT", -146)
     makeHeading(payments_box, "Verified", "RIGHT", -96)
 
     payments_scroll_child = makeScrollList(payments_box)
@@ -838,11 +841,53 @@ local function buildSeenTransactionIDs()
 end
 
 
+-- Under Tithe's tab if Tithe's installed, otherwise in its place
+local function createLedgerTabAndPage()
+    local slot = 1
+    if C_AddOns.IsAddOnLoaded("DeeprunTithe") then
+        slot = 2
+    end
+
+    -- The version is ## Version: in DeeprunLedger.toc. The sync app checks the same number.
+    local tooltip = "Deeprun Ledger " .. C_AddOns.GetAddOnMetadata(addon_name, "Version")
+
+    buildLedgerPage()
+    ledger_tab = shared.makeGuildTab(slot, "Interface\\Icons\\INV_Misc_Book_09", tooltip, main_frame)
+end
+
+
+-- Every deeprun message comes here, and goes to the one thing that handles its type
+local function listen(message, sender)
+    local message_type = strsplit("|", message)
+
+    if message_type == "RDY" then
+        shared.heardReady(message)
+    end
+
+    if message_type == "ROW" then
+        shared.saveRow(message, sender)
+    end
+
+    if message_type == "DNE" then
+        shared.commandDone(message, sender)
+    end
+
+    if message_type == "LDR" then
+        shared.answerLeaderboard()
+    end
+
+    if message_type == "RDY?" then
+        shared.answerReadyQuestion()
+    end
+end
+
+
 local ledger_events = CreateFrame("Frame")
 ledger_events:RegisterEvent("PLAYER_LOGIN")
-ledger_events:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+ledger_events:RegisterEvent("CHAT_MSG_ADDON")
+ledger_events:RegisterEvent("ADDON_LOADED")
 
-ledger_events:SetScript("OnEvent", function(self, event)
+ledger_events:SetScript("OnEvent", function(self, event, ...)
     if event == "PLAYER_LOGIN" then
         -- First time on this account, or a mail-era ledger. Those rows are already in the gist and sync brings them back.
         if tithe_ledger == nil or tithe_ledger.data == nil then
@@ -854,27 +899,43 @@ ledger_events:SetScript("OnEvent", function(self, event)
         shared.rebuildIgnoreRows()
         buildSeenTransactionIDs()
         checkSyncAtLogin()
-        buildWindow()
+        C_ChatInfo.RegisterAddonMessagePrefix(shared.prefix)
 
-    -- An item's price arrived, so its row's total can be drawn properly now
-    elseif event == "GET_ITEM_INFO_RECEIVED" then
-        shared.refreshIfOpen()
+        -- The guild window may have loaded already, before we were listening
+        if C_AddOns.IsAddOnLoaded("Blizzard_Communities") then
+            createLedgerTabAndPage()
+        end
+
+    -- Only after login, so Tithe has loaded by then if it's installed.
+    -- Before login, the PLAYER_LOGIN above does it.
+    elseif event == "ADDON_LOADED" and ... == "Blizzard_Communities" and IsLoggedIn() then
+        createLedgerTabAndPage()
+
+    elseif event == "CHAT_MSG_ADDON" then
+        local message_prefix, message, channel, sender = ...
+        if message_prefix == shared.prefix then
+            listen(message, sender)
+        end
     end
 end)
 
+
+-- Opens the guild window on the Ledger's tab
+function shared.openLedger()
+    if not (CommunitiesFrame ~= nil and CommunitiesFrame:IsShown()) then
+        ToggleGuildFrame()
+    end
+
+    shared.pickGuildTab(ledger_tab)
+end
+
+
 SLASH_DEEPRUNLEDGER1 = "/drl"
 SlashCmdList["DEEPRUNLEDGER"] = function(typed_text)
-    if typed_text == "hash" then
-        shared.showHashWindow()
+    if typed_text == "settings" then
+        shared.showSettingsWindow()
         return
     end
 
-    main_frame:Show()
-
-    -- Open on the last week the first time, then keep whatever range was picked
-    if start_date_field:GetText() == "" then
-        fillWeek()
-    end
-
-    refreshView()
+    shared.openLedger()
 end
