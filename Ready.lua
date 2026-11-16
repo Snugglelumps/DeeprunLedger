@@ -3,6 +3,7 @@
 -- asks RDY?. It ACKs rows and answers LDR.
 -- A ledger that hears another's RDY stands down for 5 minutes: no RDY, no ACKs, no RNK.
 -- It still saves every row it hears. If no RDY comes for 5 minutes, it takes over.
+-- It answers each RDY with SBY, so every ledger knows who's online. SBY never changes who answers.
 --
 -- The settings ride in RDY. The newest settings time wins, for every ledger and every tithe.
 --
@@ -12,13 +13,21 @@
 local addon_name, shared = ...
 
 -- Settings
-local ready_every_seconds = 240
+-- Shared, because tithes answer every RDY with ACC, so the account dots (Accounts.lua) time off it too
+shared.ready_every_seconds = 240
 local stand_down_seconds = 300
 
 -- Made at login and kept for the session. Tells our own RDY apart from another ledger's.
 local ledger_id = nil
 local stood_down_until = 0    -- GetServerTime() we can answer again
 local last_ready_sent = 0     -- GetServerTime() of our last RDY
+
+-- Every other ledger we've heard a RDY or SBY from this session: { name = ..., last_heard = ... }, first heard first.
+-- By name, since a ledger's ID changes every login.
+shared.other_ledgers = {}
+
+-- The name of the ledger whose RDY we last stood down for. It's the one answering until our stand-down runs out.
+shared.answering_ledger = nil
 
 
 local function send(message)
@@ -44,7 +53,7 @@ local function sendReadyIfAnswering()
         return
     end
 
-    if GetServerTime() - last_ready_sent < ready_every_seconds then
+    if GetServerTime() - last_ready_sent < shared.ready_every_seconds then
         return
     end
 
@@ -69,14 +78,28 @@ local function useNewSettings(settings_time, settings_text)
 end
 
 
+local function rememberLedger(sender)
+    for _, ledger in ipairs(shared.other_ledgers) do
+        if ledger.name == sender then
+            ledger.last_heard = GetServerTime()
+            return
+        end
+    end
+
+    table.insert(shared.other_ledgers, { name = sender, last_heard = GetServerTime() })
+end
+
+
 -- RDY from any ledger, our own included
-function shared.heardReady(message)
+function shared.heardReady(message, sender)
     local message_type, sender_id, settings_time, settings_text = strsplit("|", message)
     settings_time = tonumber(settings_time)
 
     if sender_id == ledger_id then
         return
     end
+
+    rememberLedger(sender)
 
     -- An old ledger, or a RDY typed by hand, has no settings
     if settings_time == nil then
@@ -96,6 +119,20 @@ function shared.heardReady(message)
     end
 
     stood_down_until = GetServerTime() + stand_down_seconds
+    shared.answering_ledger = sender
+    send("SBY|" .. ledger_id)
+end
+
+
+-- SBY from a ledger standing down, our own included
+function shared.heardStandby(message, sender)
+    local message_type, sender_id = strsplit("|", message)
+
+    if sender_id == ledger_id then
+        return
+    end
+
+    rememberLedger(sender)
 end
 
 
@@ -120,5 +157,9 @@ ready_frame:SetScript("OnEvent", function(self, event)
 
     -- Any ledger already answering hears this and stands down, so we answer now
     sendReady()
-    C_Timer.NewTicker(10, sendReadyIfAnswering)
+    -- The status dots too, since standing down ends on a clock, not a message
+    C_Timer.NewTicker(10, function()
+        sendReadyIfAnswering()
+        shared.showLedgerStatus()
+    end)
 end)

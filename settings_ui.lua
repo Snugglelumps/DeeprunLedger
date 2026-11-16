@@ -1,14 +1,18 @@
--- Deeprun Ledger: the /drl settings window
+-- Deeprun Ledger: the settings, in the header of the Personnel tab
 -- The guild's tithe rate, weekly custom tithe limit and start level. Save sends them to every
 -- ledger and tithe online in a RDY (Ready.lua), and they're the newest from then on.
--- It opens filled in with the current settings.
+-- They're filled in with the current settings each time the tab opens.
+-- The bell checkbox is only yours. It's saved when you click it, not sent to anyone.
+--
+--   Tithe rate [  ]   Custom limit (g) [  ]   Start level [  ]   [Save]
+--   [x] Ring a bell when a new tithe comes in (just you)          message
 
 local addon_name, shared = ...
 
-local settings_frame = nil
 local rate_field = nil
 local custom_tithe_limit_field = nil
 local level_field = nil
+local bell_checkbox = nil
 local message_label = nil
 
 
@@ -37,60 +41,59 @@ local function saveTypedSettings()
 end
 
 
-local function makeField(label_text, top)
-    local label = settings_frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    label:SetPoint("TOPLEFT", settings_frame, "TOPLEFT", 16, top - 4)
+-- A label with its box right after it. x is where the label starts.
+local function makeField(parent, label_text, x, top, label_width, box_width)
+    local label = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    label:SetPoint("TOPLEFT", parent, "TOPLEFT", x, top - 4)
     label:SetText(label_text)
 
-    local field = CreateFrame("EditBox", nil, settings_frame, "InputBoxTemplate")
-    field:SetPoint("TOPLEFT", settings_frame, "TOPLEFT", 110, top)
-    field:SetPoint("TOPRIGHT", settings_frame, "TOPRIGHT", -18, top)
-    field:SetHeight(20)
+    local field = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
+    field:SetSize(box_width, 20)
+    field:SetPoint("TOPLEFT", parent, "TOPLEFT", x + label_width, top)
     field:SetAutoFocus(false)
-    field:SetMaxLetters(0)
+    field:SetScript("OnEnterPressed", function(self)
+        self:ClearFocus()
+        saveTypedSettings()
+    end)
 
     return field
 end
 
 
-local function buildSettingsWindow()
-    settings_frame = CreateFrame("Frame", "DeeprunSettingsFrame", UIParent, "BasicFrameTemplateWithInset")
-    settings_frame:SetSize(440, 190)
-    settings_frame:SetPoint("CENTER")
-    settings_frame.TitleText:SetText("Deeprun Settings")
-    settings_frame:SetMovable(true)
-    settings_frame:EnableMouse(true)
-    settings_frame:RegisterForDrag("LeftButton")
-    settings_frame:SetScript("OnDragStart", settings_frame.StartMoving)
-    settings_frame:SetScript("OnDragStop", settings_frame.StopMovingOrSizing)
+-- In the page's header, above the line in its background, on the same two rows as the
+-- Tithes page's range buttons and sync line
+function shared.buildSettingsPanel(parent)
+    rate_field = makeField(parent, "Tithe rate", 14, -11, 62, 50)
+    custom_tithe_limit_field = makeField(parent, "Custom limit (g)", 148, -11, 96, 50)
+    level_field = makeField(parent, "Start level", 316, -11, 66, 40)
 
-    table.insert(UISpecialFrames, "DeeprunSettingsFrame")
-
-    rate_field = makeField("Tithe rate", -36)
-    custom_tithe_limit_field = makeField("Custom limit (g)", -62)
-    level_field = makeField("Start level", -88)
-
-    local save_button = CreateFrame("Button", nil, settings_frame, "UIPanelButtonTemplate")
-    save_button:SetSize(120, 22)
-    save_button:SetPoint("TOPLEFT", settings_frame, "TOPLEFT", 110, -116)
+    local save_button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+    save_button:SetSize(80, 22)
+    save_button:SetPoint("TOPLEFT", parent, "TOPLEFT", 440, -10)
     save_button:SetText("Save")
     save_button:SetScript("OnClick", saveTypedSettings)
 
-    message_label = settings_frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    message_label:SetPoint("TOPLEFT", settings_frame, "TOPLEFT", 16, -150)
+    bell_checkbox = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+    bell_checkbox:SetSize(20, 20)
+    bell_checkbox:SetPoint("TOPLEFT", parent, "TOPLEFT", 10, -34)
+    bell_checkbox:SetScript("OnClick", function(self)
+        ledger_bell_off = not self:GetChecked()
+    end)
+
+    local bell_label = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    bell_label:SetPoint("LEFT", bell_checkbox, "RIGHT", 4, 0)
+    bell_label:SetText("Ring a bell when a new tithe comes in (just you)")
+
+    message_label = parent:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    message_label:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -14, -41)
 end
 
 
-function shared.showSettingsWindow()
-    if settings_frame == nil then
-        buildSettingsWindow()
-    end
-
-    settings_frame:Show()
-
+function shared.fillSettingsPanel()
     rate_field:SetText(tostring(shared.tithe_rate))
     custom_tithe_limit_field:SetText(tostring(shared.custom_tithe_limit))
     level_field:SetText(tostring(shared.tithes_start_at_level))
+    bell_checkbox:SetChecked(not ledger_bell_off)
 
     if ledger_settings.time == 0 then
         message_label:SetText("These are the defaults. Nobody has saved settings yet.")

@@ -204,23 +204,27 @@ end
 
 ------------------------------------------------------------
 -- The page
---   [Week] [Month] [All]   [start date] to [end date] [Go]
+--   [Week] [Prev week] [Month] [All]   [start date] to [end date] [Go]
 --   Totals:   each player in the range, biggest first (scrolls)
 --   Payments: every tithe in the range, newest first (scrolls)
 ------------------------------------------------------------
 
 local main_frame = nil
 local ledger_tab = nil
+local personnel_tab = nil
 
 -- Range controls
 local week_button = nil
 local month_button = nil
 local all_button = nil
+local prev_week_button = nil
 local start_date_field = nil
 local end_date_field = nil
-local active_range = "week"   -- "week", "month", "all" or "custom"
+local active_range = "week"   -- "week", "prev_week", "month", "all" or "custom"
 local message_label = nil
 local sync_label = nil
+local status_frame = nil
+local status_dots = {}   -- 1 is us, 2 and 3 are the other ledgers
 
 -- Totals list
 local totals_scroll_child = nil
@@ -498,6 +502,7 @@ local function updateRangeButtons()
     setButtonSelected(week_button, active_range == "week")
     setButtonSelected(month_button, active_range == "month")
     setButtonSelected(all_button, active_range == "all")
+    setButtonSelected(prev_week_button, active_range == "prev_week")
 end
 
 
@@ -537,10 +542,90 @@ local function updateSyncStatus()
 end
 
 
+------------------------------------------------------------
+-- Ledger status dots
+------------------------------------------------------------
+
+local green_dot = "Interface\\COMMON\\Indicator-Green"
+local yellow_dot = "Interface\\COMMON\\Indicator-Yellow"
+local gray_dot = "Interface\\COMMON\\Indicator-Gray"
+
+
+-- Is this other ledger the one answering? It's the one we stood down for, until our stand-down runs out.
+local function isAnsweringLedger(ledger)
+    return not shared.isAnswering() and ledger.name == shared.answering_ledger
+end
+
+
+-- Every online ledger sends RDY or SBY about every 4 minutes, so 5 minutes of quiet means it's gone
+local function isOnline(ledger)
+    return GetServerTime() - ledger.last_heard < 300
+end
+
+
+-- Green is the ledger answering right now, yellow is standing by, gray is gone or never heard.
+-- Dot 1 is us, so it's green or yellow.
+function shared.showLedgerStatus()
+    -- RDYs can come in before the guild window has loaded and built the page
+    if status_frame == nil then
+        return
+    end
+
+    if shared.isAnswering() then
+        status_dots[1]:SetTexture(green_dot)
+    else
+        status_dots[1]:SetTexture(yellow_dot)
+    end
+
+    for dot_number = 2, 3 do
+        local ledger = shared.other_ledgers[dot_number - 1]
+
+        if ledger == nil or not isOnline(ledger) then
+            status_dots[dot_number]:SetTexture(gray_dot)
+        elseif isAnsweringLedger(ledger) then
+            status_dots[dot_number]:SetTexture(green_dot)
+        else
+            status_dots[dot_number]:SetTexture(yellow_dot)
+        end
+    end
+end
+
+
+local function showStatusTooltip(frame)
+    GameTooltip:SetOwner(frame, "ANCHOR_BOTTOMLEFT")
+    GameTooltip:SetText("Ledgers")
+
+    if shared.isAnswering() then
+        GameTooltip:AddLine("You: answering", 0.25, 0.8, 0.4)
+    else
+        GameTooltip:AddLine("You: standing down", 1, 0.82, 0)
+    end
+
+    for _, ledger in ipairs(shared.other_ledgers) do
+        local heard_text = ledger.name .. ": last heard " .. date("%I:%M%p", ledger.last_heard)
+
+        if not isOnline(ledger) then
+            GameTooltip:AddLine(heard_text .. ", gone", 0.6, 0.6, 0.6)
+        elseif isAnsweringLedger(ledger) then
+            GameTooltip:AddLine(heard_text .. ", answering", 0.25, 0.8, 0.4)
+        else
+            GameTooltip:AddLine(heard_text .. ", standing by", 1, 0.82, 0)
+        end
+    end
+
+    if #shared.other_ledgers < 2 then
+        GameTooltip:AddLine("Gray: no other ledger heard yet this session", 0.6, 0.6, 0.6)
+    end
+
+    GameTooltip:Show()
+end
+
+
 local function refreshView()
     shared.rebuildIgnoreRows()
     updateRangeButtons()
     updateSyncStatus()
+    shared.showLedgerStatus()
 
     local start_date, end_date = getRangeDates(start_date_field, end_date_field)
 
@@ -584,22 +669,41 @@ StaticPopupDialogs["DEEPRUN_DELETE_PAYMENT"] = {
 -- Range buttons: fill in the two date fields
 ------------------------------------------------------------
 
-local function fillLastDays(day_count)
+-- A week, Monday to Sunday, the same weeks as the leaderboard. 0 is this week, 1 is last week.
+-- This week's Sunday can be in the future.
+-- Tradeoff: it goes by your computer's calendar, not the realm's, so if they're on different
+-- days, the edges are a few hours off from the leaderboard's.
+local function fillWeeksAgo(weeks_ago)
     local today = date("*t")
-    local first_day = time({ year = today.year, month = today.month, day = today.day - (day_count - 1), hour = 12 })
+    local days_since_monday = (today.wday + 5) % 7   -- wday is 1 for Sunday, so Monday is 2
+    local monday_day = today.day - days_since_monday - 7 * weeks_ago
+    local monday = time({ year = today.year, month = today.month, day = monday_day, hour = 12 })
+    local sunday = time({ year = today.year, month = today.month, day = monday_day + 6, hour = 12 })
 
-    start_date_field:SetText(date("%Y-%m-%d", first_day))
-    end_date_field:SetText(date("%Y-%m-%d"))
+    start_date_field:SetText(date("%Y-%m-%d", monday))
+    end_date_field:SetText(date("%Y-%m-%d", sunday))
 end
 
 local function fillWeek()
     active_range = "week"
-    fillLastDays(7)
+    fillWeeksAgo(0)
 end
 
+local function fillPrevWeek()
+    active_range = "prev_week"
+    fillWeeksAgo(1)
+end
+
+-- This month, the 1st to the last day. Day 0 of next month is the last day of this one.
 local function fillMonth()
     active_range = "month"
-    fillLastDays(30)
+
+    local today = date("*t")
+    local first_day = time({ year = today.year, month = today.month, day = 1, hour = 12 })
+    local last_day = time({ year = today.year, month = today.month + 1, day = 0, hour = 12 })
+
+    start_date_field:SetText(date("%Y-%m-%d", first_day))
+    end_date_field:SetText(date("%Y-%m-%d", last_day))
 end
 
 -- From the oldest tithe in the ledger to today
@@ -641,8 +745,15 @@ local function makeScrollList(list_box)
 end
 
 
+-- The Personnel page (Personnel.lua) builds its list out of the same pieces
+shared.makeListBox = makeListBox
+shared.makeListRow = makeListRow
+shared.makeHeading = makeHeading
+shared.makeScrollList = makeScrollList
+
+
 -- The Ledger's page on the guild window (DeeprunShared.lua), about 635 by 377.
--- Opening it fills in the last week the first time, then keeps whatever range was picked.
+-- Opening it fills in this week the first time, then keeps whatever range was picked.
 local function buildLedgerPage()
     main_frame = shared.makeGuildPage()
     main_frame:SetScript("OnShow", function()
@@ -653,7 +764,7 @@ local function buildLedgerPage()
         refreshView()
     end)
 
-    -- Range row: [Week] [Month] [All]   [start date] to [end date] [Go]
+    -- Range row: [Week] [Prev week] [Month] [All]   [start date] to [end date] [Go]
     week_button = makeButton(main_frame, "Week", 60)
     week_button:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 12, -10)
     week_button:SetScript("OnClick", function()
@@ -661,8 +772,15 @@ local function buildLedgerPage()
         refreshView()
     end)
 
+    prev_week_button = makeButton(main_frame, "Prev week", 76)
+    prev_week_button:SetPoint("LEFT", week_button, "RIGHT", 4, 0)
+    prev_week_button:SetScript("OnClick", function()
+        fillPrevWeek()
+        refreshView()
+    end)
+
     month_button = makeButton(main_frame, "Month", 60)
-    month_button:SetPoint("LEFT", week_button, "RIGHT", 4, 0)
+    month_button:SetPoint("LEFT", prev_week_button, "RIGHT", 4, 0)
     month_button:SetScript("OnClick", function()
         fillMonth()
         refreshView()
@@ -706,15 +824,25 @@ local function buildLedgerPage()
         refreshView()
     end)
 
-    local settings_button = makeButton(main_frame, "Settings", 80)
-    settings_button:SetPoint("TOPRIGHT", main_frame, "TOPRIGHT", -12, -10)
-    settings_button:SetScript("OnClick", shared.showSettingsWindow)
-
     message_label = main_frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     message_label:SetPoint("TOPLEFT", main_frame, "TOPLEFT", 14, -38)
 
+    -- Three dots at the end of the sync row: us, then the other two ledgers. Hover for who's who.
+    status_frame = CreateFrame("Frame", nil, main_frame)
+    status_frame:SetSize(44, 12)
+    status_frame:SetPoint("TOPRIGHT", main_frame, "TOPRIGHT", -14, -41)
+    status_frame:SetScript("OnEnter", showStatusTooltip)
+    status_frame:SetScript("OnLeave", GameTooltip_Hide)
+
+    for dot_number = 1, 3 do
+        local dot = status_frame:CreateTexture(nil, "OVERLAY")
+        dot:SetSize(12, 12)
+        dot:SetPoint("LEFT", status_frame, "LEFT", 16 * (dot_number - 1), 0)
+        status_dots[dot_number] = dot
+    end
+
     sync_label = main_frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    sync_label:SetPoint("TOPRIGHT", main_frame, "TOPRIGHT", -14, -41)
+    sync_label:SetPoint("RIGHT", status_frame, "LEFT", -8, 0)
 
     -- Totals: title and headings on the window, the list in its box under them
     local totals_box = makeListBox(main_frame)
@@ -841,18 +969,24 @@ local function buildSeenTransactionIDs()
 end
 
 
--- Under Tithe's tab if Tithe's installed, otherwise in its place
-local function createLedgerTabAndPage()
+-- Two side tabs, Tithes then Personnel, under Tithe's tab if Tithe's installed, otherwise in its place
+local function createLedgerTabsAndPages()
     local slot = 1
     if C_AddOns.IsAddOnLoaded("DeeprunTithe") then
         slot = 2
     end
 
     -- The version is ## Version: in DeeprunLedger.toc. The sync app checks the same number.
-    local tooltip = "Deeprun Ledger " .. C_AddOns.GetAddOnMetadata(addon_name, "Version")
+    local version = C_AddOns.GetAddOnMetadata(addon_name, "Version")
 
     buildLedgerPage()
-    ledger_tab = shared.makeGuildTab(slot, "Interface\\Icons\\INV_Misc_Book_09", tooltip, main_frame)
+    ledger_tab = shared.makeGuildTab(slot, "Interface\\Icons\\INV_Misc_Book_09",
+        "Deeprun Ledger " .. version .. ": Tithes", main_frame)
+
+    local personnel_page = shared.makeGuildPage()
+    shared.buildPersonnelPage(personnel_page)
+    personnel_tab = shared.makeGuildTab(slot + 1, "Interface\\Icons\\INV_Misc_Book_11",
+        "Deeprun Ledger " .. version .. ": Personnel", personnel_page)
 end
 
 
@@ -861,7 +995,13 @@ local function listen(message, sender)
     local message_type = strsplit("|", message)
 
     if message_type == "RDY" then
-        shared.heardReady(message)
+        shared.heardReady(message, sender)
+        shared.showLedgerStatus()
+    end
+
+    if message_type == "SBY" then
+        shared.heardStandby(message, sender)
+        shared.showLedgerStatus()
     end
 
     if message_type == "ROW" then
@@ -879,6 +1019,11 @@ local function listen(message, sender)
     if message_type == "RDY?" then
         shared.answerReadyQuestion()
     end
+
+    if message_type == "ACC" then
+        shared.heardAccount(message, sender)
+        shared.showPersonnel()
+    end
 end
 
 
@@ -894,8 +1039,18 @@ ledger_events:SetScript("OnEvent", function(self, event, ...)
             tithe_ledger = { data = {}, delete = {} }
         end
 
+        -- Added after data and delete, so older saved files don't have them yet
+        if tithe_ledger.accounts == nil then
+            tithe_ledger.accounts = {}
+        end
+
+        if tithe_ledger.mains == nil then
+            tithe_ledger.mains = {}
+        end
+
         mergeIncomingRows()
         mergeIncomingDeletes()
+        shared.mergeIncomingAccounts()
         shared.rebuildIgnoreRows()
         buildSeenTransactionIDs()
         checkSyncAtLogin()
@@ -903,13 +1058,13 @@ ledger_events:SetScript("OnEvent", function(self, event, ...)
 
         -- The guild window may have loaded already, before we were listening
         if C_AddOns.IsAddOnLoaded("Blizzard_Communities") then
-            createLedgerTabAndPage()
+            createLedgerTabsAndPages()
         end
 
     -- Only after login, so Tithe has loaded by then if it's installed.
     -- Before login, the PLAYER_LOGIN above does it.
     elseif event == "ADDON_LOADED" and ... == "Blizzard_Communities" and IsLoggedIn() then
-        createLedgerTabAndPage()
+        createLedgerTabsAndPages()
 
     elseif event == "CHAT_MSG_ADDON" then
         local message_prefix, message, channel, sender = ...
@@ -930,12 +1085,12 @@ function shared.openLedger()
 end
 
 
+-- /drl opens the Ledger. /drl settings opens Personnel, where the settings are now.
 SLASH_DEEPRUNLEDGER1 = "/drl"
 SlashCmdList["DEEPRUNLEDGER"] = function(typed_text)
-    if typed_text == "settings" then
-        shared.showSettingsWindow()
-        return
-    end
-
     shared.openLedger()
+
+    if typed_text == "settings" then
+        shared.pickGuildTab(personnel_tab)
+    end
 end

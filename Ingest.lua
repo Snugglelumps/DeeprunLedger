@@ -65,6 +65,11 @@ function shared.saveRow(message, sender)
     shared.seen_transaction_ids[row.transactionID] = true
     shared.refreshIfOpen()
 
+    -- The boat's bell, for a tithe we haven't seen before. Off with the checkbox in /drl.
+    if not ledger_bell_off then
+        PlaySound(5495, "SFX")
+    end
+
     ackIfAnswering(row.transactionID)
 end
 

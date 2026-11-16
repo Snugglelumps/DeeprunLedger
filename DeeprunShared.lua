@@ -96,6 +96,26 @@ function shared.rnkMessage(week_start, players)
 end
 
 
+-- Last week's top 3, sent at the front of every leaderboard. The week is when it started.
+-- WIN|<week start>|<player>,<week gold>;...
+function shared.winMessage(week_start, players)
+    local entries = {}
+
+    for player_number, player in ipairs(players) do
+        table.insert(entries, player.name .. "," .. player.week_gold)
+    end
+
+    return "WIN|" .. week_start .. "|" .. table.concat(entries, ";")
+end
+
+
+-- A tithe's account ID, answering RDY, so ledgers can tie alts together.
+-- ACC|<id>, like ACC|a3f9-c01e42. The server stamps which character sent it.
+function shared.accMessage(account_id)
+    return "ACC|" .. account_id
+end
+
+
 ------------------------------------------------------------
 -- Weeks
 ------------------------------------------------------------
@@ -173,7 +193,7 @@ end
 
 
 -- Hides the frames of whatever page Blizzard has up, except the guild and community list.
--- Switching between our two pages, they're already hidden.
+-- Switching between our own pages, they're already hidden.
 local function hideBlizzardsPage()
     if #DeeprunGuildTabs.hidden > 0 then
         return

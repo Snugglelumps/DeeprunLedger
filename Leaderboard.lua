@@ -4,6 +4,7 @@
 -- Each finished week: most gold gets 3 points, second 2, third 1. Tied players share a place
 -- and each get its points, and the next place is skipped: two firsts, then a third.
 -- This week only counts once it's over.
+-- Each board starts with WIN, last week's top 3, then RNK, a few players at a time.
 
 local addon_name, shared = ...
 
@@ -120,6 +121,26 @@ function shared.getLeaderboard()
 end
 
 
+-- Last week's top 3, most gold first.
+-- Tradeoff: a tie for third that would make 4 players only shows 3 of them.
+local function getLastWeekWinners()
+    local this_week_start = shared.thisWeekStart()
+    local last_week_start = this_week_start - seconds_per_week
+    local weeks = addUpPayments(this_week_start)
+
+    local players = {}
+    for name, player in pairs(weeks[last_week_start] or {}) do
+        table.insert(players, { name = name, week_gold = player.gold })
+    end
+
+    table.sort(players, function(first, second)
+        return first.week_gold > second.week_gold
+    end)
+
+    return last_week_start, { unpack(players, 1, 3) }
+end
+
+
 -- The whole board to the guild, one message a second so the throttle never drops one.
 -- If anyone asked while it was going out, it may be missing their payment, so send one more.
 local function sendBoard()
@@ -128,13 +149,15 @@ local function sendBoard()
     local week_start, players = shared.getLeaderboard()
 
     local messages = {}
+    table.insert(messages, shared.winMessage(getLastWeekWinners()))
+
     for first = 1, #players, players_per_message do
         local some_players = { unpack(players, first, first + players_per_message - 1) }
         table.insert(messages, shared.rnkMessage(week_start, some_players))
     end
 
     -- Nobody's paid yet this week. Still send the week, so tithes clear last week's board.
-    if #messages == 0 then
+    if #players == 0 then
         table.insert(messages, shared.rnkMessage(week_start, {}))
     end
 
