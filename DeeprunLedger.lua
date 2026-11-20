@@ -994,12 +994,12 @@ end
 local function listen(message, sender)
     local message_type = strsplit("|", message)
 
-    if message_type == "RDY" then
+    if message_type == "RDY" and shared.sentByLedgerRank(sender) then
         shared.heardReady(message, sender)
         shared.showLedgerStatus()
     end
 
-    if message_type == "SBY" then
+    if message_type == "SBY" and shared.sentByLedgerRank(sender) then
         shared.heardStandby(message, sender)
         shared.showLedgerStatus()
     end

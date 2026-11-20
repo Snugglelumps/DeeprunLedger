@@ -1,5 +1,5 @@
 -- Deeprun Ledger: officers setting what a player owes
--- Right-click a player in Totals. Their Tithe only does it if you're the Guild Master or an officer.
+-- Right-click a player in Totals. Their Tithe only does it if you're in the top three ranks.
 --
 -- Saved (see DeeprunLedger.toc):
 --   deeprun_commands  commands their Tithe hasn't said DNE to yet, one per player, newest wins.
