@@ -1,14 +1,16 @@
 -- Deeprun Ledger: officers setting what a player owes
 -- Right-click a player in Totals. Their Tithe only does it if you're in the top three ranks.
 --
--- Saved (see DeeprunLedger.toc):
---   deeprun_commands  commands their Tithe hasn't said DNE to yet, one per player, newest wins.
---                     { player = ..., time = ..., owed = copper }
+-- One try. The SET goes out once, and the popup waits for their Tithe's DNE:
+-- it says done, or after a few seconds, that nothing answered. Offline, or no Tithe,
+-- and nothing changes. Nothing is saved or sent again later: a SET landing days late
+-- would undo everything they'd sold and paid since. Their Tithe also ignores any SET
+-- more than a minute old.
 
 local addon_name, shared = ...
 
 -- Settings
-local resend_every_seconds = 300 -- Offline players get it within 5 minutes of logging in
+local reply_seconds = 10
 
 
 local function send(message)
@@ -21,44 +23,59 @@ local function ledgerPrint(text)
 end
 
 
--- Saves it until their Tithe says DNE, and sends it now in case they're online.
--- Server time, so a PC clock that's off can't make an old command look new.
+local waiting = nil  -- the SET sent and not answered yet: { player = ..., time = ..., owed = copper }
+
+-- Set by the popup, below
+local set_button = nil
+local status = nil
+
+
+local function showStatus(text, r, g, b)
+    status:SetText(text)
+    status:SetTextColor(r, g, b)
+end
+
+
+-- Sends it once and waits for their DNE.
+-- Server time, so their Tithe can tell how old it is.
 local function setOwed(player, copper)
-    deeprun_commands[player] = { player = player, time = GetServerTime(), owed = copper }
-    send(shared.setMessage(deeprun_commands[player]))
+    local command = { player = player, time = GetServerTime(), owed = copper }
+    waiting = command
+    send(shared.setMessage(command))
 
-    ledgerPrint("Setting " .. player .. "'s tithe to " .. GetMoneyString(copper)
-        .. ". If they're offline it goes through when they log in.")
+    set_button:Disable()
+    showStatus("Waiting for " .. Ambiguate(player, "none") .. "'s Tithe...", 0.6, 0.6, 0.6)
+
+    C_Timer.After(reply_seconds, function()
+        if waiting ~= command then
+            return
+        end
+
+        waiting = nil
+        set_button:Enable()
+        showStatus("No answer. Nothing changed: they're offline, or not running the Tithe.", 1, 0.5, 0.31)
+        ledgerPrint("No answer from " .. player .. ". Their tithe wasn't changed.")
+    end)
 end
 
 
-local function sendWaitingCommands()
-    for player, command in pairs(deeprun_commands) do
-        send(shared.setMessage(command))
-    end
-end
-
-
--- DNE from the player's own Tithe, for the newest command we have for them
+-- DNE from the player's own Tithe, for the SET we're waiting on
 function shared.commandDone(message, sender)
     local message_type, player, command_time = strsplit("|", message)
 
-    local command = deeprun_commands[player]
-    if command == nil then
+    if waiting == nil or sender ~= player or player ~= waiting.player then
         return
     end
 
-    if sender ~= player then
+    if tonumber(command_time) ~= waiting.time then
         return
     end
 
-    -- DNE to an older one we've since replaced
-    if tonumber(command_time) < command.time then
-        return
-    end
-
-    deeprun_commands[player] = nil
-    ledgerPrint(player .. "'s tithe is now " .. GetMoneyString(command.owed) .. ".")
+    local owed = waiting.owed
+    waiting = nil
+    set_button:Enable()
+    showStatus("Done. " .. Ambiguate(player, "none") .. " now owes " .. GetMoneyString(owed) .. ".", 1, 0.82, 0)
+    ledgerPrint(player .. "'s tithe is now " .. GetMoneyString(owed) .. ".")
 end
 
 
@@ -79,7 +96,6 @@ local function setTypedAmount()
     local silver = tonumber(silver_box:GetText()) or 0
     local copper = tonumber(copper_box:GetText()) or 0
 
-    set_tithe_frame:Hide()
     setOwed(set_tithe_player, gold * 10000 + silver * 100 + copper)
 end
 
@@ -92,7 +108,11 @@ local function makeCoinBox(left, width, max_letters, coin_texture)
     box:SetAutoFocus(false)
     box:SetNumeric(true)
     box:SetMaxLetters(max_letters)
-    box:SetScript("OnEnterPressed", setTypedAmount)
+    box:SetScript("OnEnterPressed", function()
+        if waiting == nil then
+            setTypedAmount()
+        end
+    end)
     box:SetScript("OnEscapePressed", function()
         set_tithe_frame:Hide()
     end)
@@ -109,7 +129,7 @@ end
 -- Looks like Blizzard's popups, the same as Tithe's Pay Custom Tithe box
 local function buildSetTitheFrame()
     set_tithe_frame = CreateFrame("Frame", "DeeprunSetTitheFrame", UIParent, "BackdropTemplate")
-    set_tithe_frame:SetSize(300, 116)
+    set_tithe_frame:SetSize(300, 140)
     set_tithe_frame:SetPoint("TOP", UIParent, "TOP", 0, -135)
     set_tithe_frame:SetFrameStrata("DIALOG")
     set_tithe_frame:EnableMouse(true)
@@ -130,10 +150,15 @@ local function buildSetTitheFrame()
     silver_box = makeCoinBox(144, 32, 2, "Interface\\MoneyFrame\\UI-SilverIcon")
     copper_box = makeCoinBox(204, 32, 2, "Interface\\MoneyFrame\\UI-CopperIcon")
 
-    local set_button = CreateFrame("Button", nil, set_tithe_frame, "UIPanelButtonTemplate")
+    -- Waiting, done, or no answer
+    status = set_tithe_frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    status:SetPoint("TOP", set_tithe_frame, "TOP", 0, -74)
+    status:SetWidth(260)
+
+    set_button = CreateFrame("Button", nil, set_tithe_frame, "UIPanelButtonTemplate")
     set_button:SetSize(110, 22)
     set_button:SetPoint("BOTTOMRIGHT", set_tithe_frame, "BOTTOM", -4, 18)
-    set_button:SetText("Set")
+    set_button:SetText("Attempt Set")
     set_button:SetScript("OnClick", setTypedAmount)
 
     local cancel_button = CreateFrame("Button", nil, set_tithe_frame, "UIPanelButtonTemplate")
@@ -156,6 +181,9 @@ function shared.showSetTithe(player)
 
     set_tithe_player = player
     question:SetText("What should " .. Ambiguate(player, "none") .. " owe?")
+    if waiting == nil then
+        status:SetText("")
+    end
     gold_box:SetText("")
     silver_box:SetText("")
     copper_box:SetText("")
@@ -163,15 +191,3 @@ function shared.showSetTithe(player)
     gold_box:SetFocus()
 end
 
-
-local commands_frame = CreateFrame("Frame")
-commands_frame:RegisterEvent("PLAYER_LOGIN")
-
-commands_frame:SetScript("OnEvent", function(self, event)
-    if deeprun_commands == nil then
-        deeprun_commands = {}
-    end
-
-    sendWaitingCommands()
-    C_Timer.NewTicker(resend_every_seconds, sendWaitingCommands)
-end)
